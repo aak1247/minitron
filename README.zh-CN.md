@@ -15,6 +15,19 @@ minitron 将 Electron 应用与运行时分开打包。应用只携带一个轻�
 
 ![minitron 启动器](docs/images/launcher-zh.png)
 
+## 包体积
+
+v0.1.0，使用内置示例应用和 Electron 32.2.0。下载列为压缩包体积，其余为解压后的文件大小。
+
+| 平台 | 启动器下载 | 启动器 | 示例应用目录 | Electron 运行时 |
+|---|---:|---:|---:|---:|
+| Windows x64 | [5.19 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-windows-x64.zip) | 9.65 MiB | 9.65 MiB | 264.74 MiB |
+| Linux x64 | [6.50 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-linux-x64.tar.gz) | 13.20 MiB | 13.21 MiB | 264.98 MiB |
+| macOS Intel | [5.25 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-macos-x64.tar.gz) | 9.63 MiB | 9.64 MiB | 246.06 MiB |
+| macOS Apple Silicon | [5.09 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-macos-arm64.tar.gz) | 8.39 MiB | 8.40 MiB | 239.90 MiB |
+
+示例应用目录包含启动器、配置和应用资源，不含共享运行时。示例的应用更新 ZIP 仅 **7.88 KiB**。完整字节数见 Release 中的 [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.1.0/sizes.json)。
+
 ## 安装
 
 直接下载[预编译二进制](https://github.com/aak1247/minitron/releases/latest)，或用脚本安装最新启动器，无需 Rust 工具链。
@@ -37,7 +50,7 @@ sh /tmp/minitron-install.sh --dir ./minitron-bin
 
 脚本自动选择当前平台的二进制并校验 SHA-256。Windows 可用 `-Version v0.1.0`、Linux/macOS 可用 `--version v0.1.0` 指定版本。已有应用配置和资源会保留。
 
-Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖，Electron 另需常规桌面库。
+Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖，Electron 还需要 GTK3、NSS、音频和 GBM 等桌面库；在 Ubuntu 22.04 上可安装 `libgtk-3-0 libnss3 libasound2 libgbm1`。
 
 ## 打包应用
 
