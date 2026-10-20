@@ -21,7 +21,7 @@ if (-not $AppVersion) { $AppVersion = (Get-Content -Raw -LiteralPath (Join-Path 
 if ($AppVersion -notmatch '^\d+\.\d+\.\d+$' -or $RuntimeVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'App and runtime versions must be exact stable x.y.z values.' }
 if ($AppId -notmatch '^[a-zA-Z0-9._-]+$' -or $AppName -notmatch '^[a-zA-Z0-9 ._-]+$') { throw 'Invalid application identifier or name.' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot "dist/windows/$AppVersion" }
-$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+$OutputDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 $staging = Join-Path $OutputDirectory 'application'
 $resources = Join-Path $OutputDirectory 'resources'
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null

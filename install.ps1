@@ -176,7 +176,7 @@ try {
         throw 'The minitron.exe binary in the release archive is empty.'
     }
 
-    $targetDir = [IO.Path]::GetFullPath($InstallDir)
+    $targetDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
     if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
         New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
     }

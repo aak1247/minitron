@@ -170,11 +170,11 @@ function getInstallerRunners(target) {
   });
 }
 
-function runInstaller(target, args, runner, workingDirectory = repositoryRoot) {
+function runInstaller(target, args, runner, workingDirectory = repositoryRoot, entryScript = join(repositoryRoot, 'install.ps1')) {
   let executable;
   let executableArgs;
   if (target.os === 'windows') {
-    const installerPath = join(repositoryRoot, 'install.ps1');
+    const installerPath = entryScript;
     executable = runner;
     executableArgs = [
       '-NoProfile',
@@ -288,6 +288,22 @@ async function runInstallerTests(t) {
       assertCommandSucceeded(defaultResult, `${runnerLabel}: installing into the current directory by default`);
       assert.deepEqual(readFileSync(join(defaultDirectory, target.binaryName)), binaryContents);
       assert.equal(readFileSync(join(defaultDirectory, 'minitron.toml'), 'utf8'), 'default directory config stays\n');
+
+      if (target.os === 'windows') {
+        // Set-Location does not update .NET's process working directory.
+        const initial = join(tempRoot, `${runnerSlug} process directory`);
+        const selected = join(tempRoot, `${runnerSlug} PowerShell directory`);
+        mkdirSync(initial);
+        mkdirSync(selected);
+        const wrapper = join(tempRoot, `${runnerSlug}-location.ps1`);
+        writeFileSync(wrapper, 'param($Directory, $Installer, $ReleaseBase)\nSet-Location -LiteralPath $Directory\n& $Installer -InstallDir ./relative-output -BaseUrl $ReleaseBase\n');
+        const relativeResult = await runInstaller(target, {
+          windows: ['-Directory', selected, '-Installer', join(repositoryRoot, 'install.ps1'), '-ReleaseBase', `${fixture.baseUrl}/good`],
+        }, runner, initial, wrapper);
+        assertCommandSucceeded(relativeResult, `${runnerLabel}: resolving paths after Set-Location`);
+        assert.deepEqual(readFileSync(join(selected, 'relative-output', target.binaryName)), binaryContents);
+        assert.deepEqual(readdirSync(initial), []);
+      }
 
       const checksumDirectory = join(tempRoot, `${runnerSlug} checksum failure`);
       mkdirSync(checksumDirectory);
