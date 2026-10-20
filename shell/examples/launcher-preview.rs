@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ui = weak.upgrade().unwrap();
                 if !exercised.replace(true) {
                     if action == "compact" {
-                        ui.window().set_size(slint::LogicalSize::new(620.0, 560.0));
+                        ui.window().set_size(slint::LogicalSize::new(620.0, 500.0));
                     } else if action == "details" || action == "retry" {
                         // Exercise actual controls at the default logical window size.
                         assert_eq!(ui.get_stage(), "error");

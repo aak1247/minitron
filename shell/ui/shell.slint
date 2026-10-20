@@ -40,8 +40,8 @@ component Step inherits Rectangle {
 export component ShellWindow inherits Window {
     title: "minitron · 应用启动器";
     icon: @image-url("../assets/icon.png");
-    preferred-width: 660px; preferred-height: 560px;
-    min-width: 620px; min-height: 560px;
+    preferred-width: 660px; preferred-height: 500px;
+    min-width: 620px; min-height: 500px;
     background: #f4f6fc;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 13px;
@@ -93,14 +93,14 @@ export component ShellWindow inherits Window {
             VerticalLayout {
                 x: 0;
                 width: parent.width - 190px;
-                padding-top: 15px; padding-bottom: 10px; spacing: 12px;
-                Text { text: "轻盈启动 · 自在运行"; color: #526b9b; font-size: 11px; font-weight: 600; }
+                alignment: center;
+                spacing: 10px;
                 Text {
-                    text: root.failed ? "遇到一点小状况。" : root.done ? "一切就绪，即刻出发。" : "好体验，即将就绪。";
+                    text: root.failed ? "启动未完成" : root.done ? "正在启动" : "准备启动";
                     color: #202c46; font-size: 28px; font-weight: 700;
                 }
                 Text {
-                    text: root.failed ? "准备过程已暂停，\n你可以查看详情后重新尝试。" : root.done ? "共享运行环境已准备完成，\n正在为你打开应用。" : "正在为应用准备共享运行环境，\n准备完成后将自动打开应用。";
+                    text: root.failed ? "请重试或查看错误详情。" : root.done ? "即将打开应用。" : "准备完成后自动打开应用。";
                     color: #5e6d87; font-size: 13px; wrap: word-wrap;
                 }
             }
@@ -172,18 +172,11 @@ export component ShellWindow inherits Window {
                     Rectangle { height: 28px; Rectangle { x: 0; y: 12px; width: parent.width; height: 1px; background: #dde3ef; } }
                     Step { number: "3"; label: "启动应用"; active: root.done; }
                 }
-                Text {
-                    text: root.failed ? "支持断点续传，重试时会尝试复用有效的下载内容。" : "一次准备，多应用共享。让每一次启动，都更轻盈。";
+                if root.failed: Text {
+                    text: "重试时将尝试继续下载。";
                     color: #61708c; font-size: 11px; horizontal-alignment: center;
                 }
             }
-        }
-        Rectangle { height: 1px; background: #e1e6f0; }
-        HorizontalLayout {
-            height: 16px;
-            Text { text: "共享运行时，更小的应用。"; color: #61708c; font-size: 10px; }
-            Rectangle { horizontal-stretch: 1; }
-            Text { text: "POWERED BY MINITRON"; color: #61708c; font-size: 9px; font-weight: 600; }
         }
     }
 }
