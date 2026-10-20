@@ -2,61 +2,62 @@
 
 **更小的 Electron 应用包，共享同一份运行时。**
 
-[English](README.md) | **简体中文**
+[English](README.md) | **简体中文** · [下载](https://github.com/aak1247/minitron/releases/latest)
 
-minitron 将 Electron 应用与运行时分开发行。应用只携带轻量启动器和业务资源，多个应用共享 Electron，减少重复下载和应用更新包体积。
+minitron 将 Electron 应用与运行时分开打包。应用只携带一个轻量原生启动器，多个应用可复用同一份 Electron，减少重复下载和应用更新体积。
 
-- 纯应用打包，支持 ASAR 和原生模块。
-- 共享运行时，支持断点续传和自动清理。
-- 后台更新，下次启动生效，支持回退上一版本。
-- 中英双语，自动跟随系统显示语言。
+- 仅包含应用的 ASAR 包，支持原生模块。
+- 共享运行时、断点续传和自动清理。
+- 后台更新与上一版本回滚。
+- 根据系统显示语言自动选择中文或英文。
 
-适用于 **Windows x64**。首次启动下载 Electron，后续启动复用已安装的运行时。
+支持 **Windows x64、Linux x64、macOS Intel / Apple Silicon**。首次启动应用时下载 Electron，使用相同版本的应用共享运行时。
 
 ![minitron 启动器](docs/images/launcher-zh.png)
 
-## 快速开始
+## 安装
 
-构建工具：Node.js 22.12+、Rust 1.92+、MSVC/Windows SDK 和 NSIS。使用原生模块时还需 Python 和 C++ 构建工具。
+直接下载[预编译二进制](https://github.com/aak1247/minitron/releases/latest)，或用脚本安装最新启动器，无需 Rust 工具链。
 
-```powershell
-git clone https://github.com/aak1247/minitron.git
-cd minitron
-
-./scripts/build-windows.ps1 -RuntimeVersion 32.2.0 -ManifestUrl https://example.com/myapp/manifest.json
-```
-
-将 Electron 版本和更新地址换成应用对应的配置。此命令打包内置示例应用；已有应用可参考[打包应用](docs/usage.zh-CN.md#打包应用)。
-
-产物位于 `dist/windows/1.0.0/`：
-
-| 产物 | 用途 |
-|---|---|
-| `application/` | 不含 Electron 的应用目录 |
-| `MyApp-Setup-1.0.0.exe` | Windows 安装包 |
-| `app-1.0.0-win32-x64-electron-32.2.0.zip` | 应用更新包 |
-
-启动器从配置的更新源下载 Electron，更新源的部署方式见[发布更新](docs/usage.zh-CN.md#发布更新)。
-
-## 启动应用
-
-打开应用目录内的 `shell.exe`。更新在后台下载，下次启动时生效。
+### Windows
 
 ```powershell
-./shell.exe --offline       # 离线启动
-./shell.exe --no-update     # 启动时不检查应用更新
-./shell.exe --rollback      # 恢复上一版本
-./shell.exe --help          # 查看可用选项
+Invoke-WebRequest https://github.com/aak1247/minitron/releases/latest/download/install.ps1 -OutFile "$env:TEMP/minitron-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP/minitron-install.ps1" -InstallDir ./minitron-bin
+./minitron-bin/minitron.exe --help
 ```
+
+### Linux / macOS
+
+```sh
+curl -fsSL https://github.com/aak1247/minitron/releases/latest/download/install.sh -o /tmp/minitron-install.sh
+sh /tmp/minitron-install.sh --dir ./minitron-bin
+./minitron-bin/minitron --help
+```
+
+脚本自动选择当前平台的二进制并校验 SHA-256。Windows 可用 `-Version v0.1.0`、Linux/macOS 可用 `--version v0.1.0` 指定版本。已有应用配置和资源会保留。
+
+Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖，Electron 另需常规桌面库。
+
+## 打包应用
+
+安装 Node.js 22.12+，然后按[打包指南](docs/usage.zh-CN.md#打包应用)操作。Windows 和 Linux/macOS 脚本使用预编译启动器，生成以下目录：
+
+```text
+application/
+  minitron.exe         # Linux/macOS 下为 minitron
+  minitron.toml
+  resources/
+    app.asar
+    app.asar.unpacked/ # 按需生成
+```
+
+将此目录分发给用户。Windows 打开 `minitron.exe`，Linux/macOS 运行 `./minitron`。应用更新在后台下载，下次启动时生效；更新 ZIP 只包含应用资源。
+
+Windows 还可通过 [NSIS 打包脚本](docs/usage.zh-CN.md#windows-安装包)生成安装程序。
 
 ## 语言
 
-启动器自动跟随系统显示语言。中文使用简体中文，其他语言使用英语。
+启动器跟随系统显示语言：中文系统使用简体中文，其他语言使用英语。可通过 `MINITRON_LANG=en`、`zh` 或 `auto` 手动指定。
 
-```powershell
-$env:MINITRON_LANG = 'en'    # 英语
-$env:MINITRON_LANG = 'zh'    # 中文
-$env:MINITRON_LANG = 'auto'  # 跟随系统；未设置时也自动识别
-```
-
-更多打包、配置和签名更新选项见[使用指南](docs/usage.zh-CN.md)。
+配置、签名更新和启动参数见[使用指南](docs/usage.zh-CN.md)。

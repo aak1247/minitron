@@ -4,19 +4,35 @@
 
 ## 打包应用
 
-应用源码包含 package.json、package-lock.json 和已构建的入口文件。在 minitron 目录运行：
+应用源码目录需包含 `package.json`、`package-lock.json` 和已构建的入口文件。安装 Node.js 22.12+，获取打包工具：
 
-```powershell
+```sh
+git clone https://github.com/aak1247/minitron.git
+cd minitron
 npm --prefix app ci
-
-node app/scripts/pack-asar.js --source ../my-electron-app --runtime-version 32.2.0 --version 1.0.0 --out ./dist/windows/1.0.0/resources
-
-./scripts/build-windows.ps1 -SkipAppBuild -AppId com.example.myapp -AppName MyApp -AppVersion 1.0.0 -RuntimeVersion 32.2.0 -ManifestUrl https://example.com/myapp/manifest.json
 ```
 
-两条打包命令使用相同的 Electron 版本。原生模块按当前主机的平台和架构重建。
+Windows（PowerShell）：
 
-打包器自动包含 `package.main` 所在目录。其他文件和需要真实文件路径的资源可在应用的 package.json 中配置：
+```powershell
+./install.ps1 -InstallDir ./bin
+node scripts/build-app.mjs --source ../my-electron-app --launcher ./bin/minitron.exe --out ./dist/myapp --app-id com.example.myapp --runtime-version 32.2.0 --manifest-url https://example.com/myapp/manifest.json
+./dist/myapp/application/minitron.exe
+```
+
+Linux / macOS：
+
+```sh
+sh ./install.sh --dir ./bin
+sh scripts/build-unix.sh --source ../my-electron-app --launcher ./bin/minitron --out ./dist/myapp --app-id com.example.myapp --runtime-version 32.2.0 --manifest-url https://example.com/myapp/manifest.json
+./dist/myapp/application/minitron
+```
+
+应用版本默认读取源项目的 `package.json`，可用 `--version 1.0.0` 覆盖。将 `--source`、Electron 版本和更新地址替换为自己的值，并按下文部署更新源。原生模块会为当前系统和架构重新编译，需要 Python 与 C++ 编译工具。
+
+`dist/myapp/application/` 是不含 Electron 的完整应用目录；同级的 `app-<version>-<platform>-<arch>-electron-<version>.zip` 是应用更新包。macOS 输出为可通过终端运行的目录，未封装成 `.app` 或 `.dmg`。
+
+打包器会包含 `package.main` 所在目录。额外文件和必须通过真实文件路径访问的资源可在应用的 `package.json` 中配置：
 
 ```json
 {
@@ -36,14 +52,14 @@ node app/scripts/pack-asar.js --source ../my-electron-app --runtime-version 32.2
 使用应用 ZIP 和官方 Electron ZIP 生成更新源：
 
 ```powershell
-node scripts/publish-release.mjs --app-id com.example.myapp --version 1.0.0 --runtime-version 32.2.0 --platform win32-x64 --app-zip ./dist/windows/1.0.0/app-1.0.0-win32-x64-electron-32.2.0.zip --runtime-zip C:/downloads/electron-v32.2.0-win32-x64.zip --base-url https://example.com/myapp --out ./dist/publish
+node scripts/publish-release.mjs --app-id com.example.myapp --version 1.0.0 --runtime-version 32.2.0 --platform win32-x64 --app-zip ./dist/myapp/app-1.0.0-win32-x64-electron-32.2.0.zip --runtime-zip C:/downloads/electron-v32.2.0-win32-x64.zip --base-url https://example.com/myapp --out ./dist/publish
 ```
 
 将 `dist/publish` 的内容部署到 base-url，使 `manifest.json` 可通过启动器配置的 `ManifestUrl` 访问。
 
 后续发布增加应用版本，并传入 `--previous-manifest <previous-manifest.json>`，保留旧安装所需的运行时条目及对应 ZIP 文件。
 
-发布启动器更新时，追加 `--shell <launcher.exe> --shell-version <version>`。应用需要特定启动器版本时，可通过 `--min-shell-version <version>` 设置最低版本。
+发布启动器更新时，追加 `--shell <minitron-binary> --shell-version <version>`。应用需要特定启动器版本时，可通过 `--min-shell-version <version>` 设置最低版本。
 
 ### 签名更新
 
@@ -53,11 +69,11 @@ node scripts/publish-release.mjs --app-id com.example.myapp --version 1.0.0 --ru
 node -e "const c=require('node:crypto'),f=require('node:fs');const k=c.generateKeyPairSync('ed25519');f.writeFileSync('release-private.pem',k.privateKey.export({format:'pem',type:'pkcs8'}));"
 ```
 
-发布命令追加 `--signing-key ./release-private.pem`。构建应用时传入 `-ManifestPublicKey <public-key.txt中的值>`，公钥来自生成的 `dist/publish/public-key.txt`。应用中仅包含公钥。
+发布命令追加 `--signing-key ./release-private.pem`。构建应用时传入 `--manifest-public-key <public-key.txt中的值>`，公钥来自生成的 `dist/publish/public-key.txt`。应用中仅包含公钥。
 
 ### 本地更新源
 
-发布时使用 `--base-url http://127.0.0.1:8787 --out ./dist/local-source`；构建时使用 `-ManifestUrl http://127.0.0.1:8787/manifest.json -AllowLocalhostHttp`，然后启动服务：
+发布时使用 `--base-url http://127.0.0.1:8787 --out ./dist/local-source`；构建时使用 `--manifest-url http://127.0.0.1:8787/manifest.json --allow-localhost-http`，然后启动服务：
 
 ```powershell
 node scripts/serve-release.mjs --dir ./dist/local-source --port 8787
@@ -65,7 +81,7 @@ node scripts/serve-release.mjs --dir ./dist/local-source --port 8787
 
 ## 配置
 
-构建脚本在启动器旁生成 `shell.toml`：
+构建脚本在启动器旁生成 `minitron.toml`：
 
 | 配置项 | 用途 |
 |---|---|
@@ -78,7 +94,7 @@ node scripts/serve-release.mjs --dir ./dist/local-source --port 8787
 
 构建选项包括：`-Makensis <path>` 指定 NSIS，`-OutputDirectory <path>` 指定输出目录，`-SkipInstaller` 仅生成应用目录。
 
-共享运行时默认存放在 `%LOCALAPPDATA%/SharedElectron`，可通过 `ELECTRON_RUNTIME_ROOT` 指定其他目录。卸载应用时会保留其他应用仍在使用的运行时。
+共享运行时默认存放在 Windows 的 `%LOCALAPPDATA%/SharedElectron`、Linux 的 `$XDG_DATA_HOME/SharedElectron`（默认 `~/.local/share/SharedElectron`）或 macOS 的 `~/Library/Application Support/SharedElectron`，可通过 `ELECTRON_RUNTIME_ROOT` 指定其他目录。卸载应用时会保留其他应用仍在使用的运行时。
 
 ## 启动选项
 
@@ -93,3 +109,13 @@ node scripts/serve-release.mjs --dir ./dist/local-source --port 8787
 | `-- <arguments>` | 向应用传递参数 |
 
 通过 `MINITRON_LANG=en`、`zh` 或 `auto` 设置语言。未指定时跟随系统显示语言，无法匹配时使用英语。
+
+## Windows 安装包
+
+安装 NSIS 后，可基于同一份预编译启动器和应用资源生成安装程序：
+
+```powershell
+./scripts/build-windows.ps1 -SkipAppBuild -ShellBinary ./bin/minitron.exe -OutputDirectory ./dist/myapp -AppId com.example.myapp -AppName MyApp -AppVersion 1.0.0 -RuntimeVersion 32.2.0 -ManifestUrl https://example.com/myapp/manifest.json
+```
+
+输出 `dist/myapp/MyApp-Setup-1.0.0.exe`。可用 `-Makensis <path>` 指定 NSIS 路径。

@@ -1,0 +1,17 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { hashFile } from './publish-release.mjs';
+
+const directory = path.resolve(process.argv[2] || 'dist/release');
+const platforms = ['windows-x64', 'linux-x64', 'macos-x64', 'macos-arm64'];
+const sizes = await Promise.all(platforms.map(async key => JSON.parse(await fs.readFile(path.join(directory, `${key}.json`), 'utf8'))));
+if (new Set(sizes.map(size => size.version)).size !== 1) throw new Error('Release versions differ');
+for (const size of sizes) {
+  if (await hashFile(path.join(directory, size.archive)) !== size.sha256) throw new Error(`Archive changed: ${size.archive}`);
+}
+for (const name of ['install.ps1', 'install.sh']) await fs.copyFile(name, path.join(directory, name));
+const files = [...sizes.map(size => size.archive), 'install.ps1', 'install.sh'];
+await fs.writeFile(path.join(directory, 'SHA256SUMS'), (await Promise.all(files.map(async name => `${await hashFile(path.join(directory, name))}  ${name}`))).join('\n') + '\n');
+await fs.writeFile(path.join(directory, 'sizes.json'), JSON.stringify(sizes, null, 2) + '\n');
+const mib = bytes => (bytes / 1024 / 1024).toFixed(2);
+await fs.writeFile(path.join(directory, 'release-notes.md'), `Small Electron app packages with a shared runtime.\n\nDownload the archive for your system, or use [the installation scripts](https://github.com/aak1247/minitron#install).\n\n| Platform | Download | Extracted launcher |\n|---|---:|---:|\n${sizes.map(s => `| ${s.platform} | ${mib(s.downloadBytes)} MiB | ${mib(s.binaryBytes)} MiB |`).join('\n')}\n\nArchives contain only \`minitron\` (\`minitron.exe\` on Windows). Electron is downloaded separately on the first app launch and shared between apps using the same version. See \`SHA256SUMS\` for checksums and \`sizes.json\` for exact byte counts.\n`);

@@ -15,6 +15,9 @@ for (const key of ['runtime-zip', 'runtime-version', 'upgrade-runtime-zip', 'upg
   if (!options[key]) throw new Error(`Missing --${key}`);
 }
 const work = await fs.mkdtemp(path.join(os.tmpdir(), 'ers-e2e-'));
+const runtimePlatform = `${process.platform}-${process.arch}`;
+const launcherName = process.platform === 'win32' ? 'minitron.exe' : 'minitron';
+const configName = 'minitron.toml';
 const source = path.join(work, 'source');
 const cache = path.join(work, 'runtime-cache');
 const cache2 = path.join(work, 'concurrent-cache');
@@ -33,11 +36,21 @@ const requests = [];
 const ownedProcesses = new Set();
 const processRecords = [];
 const results = [];
-const report = { started: new Date().toISOString(), work, platform: `${process.platform}-${process.arch}`, results };
+const report = { started: new Date().toISOString(), work, platform: runtimePlatform, results };
 
 function terminateOwnedTree(child) {
-  if (process.platform === 'win32' && child.pid) spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-  else child.kill();
+  if (!child.pid) return;
+  if (process.platform === 'win32') {
+    spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    return;
+  }
+  try {
+    // Unix launches are detached into their own process group. This cleans up
+    // Electron and helper processes when a test times out or exits early.
+    process.kill(-child.pid, 'SIGKILL');
+  } catch (error) {
+    if (error.code !== 'ESRCH') child.kill('SIGKILL');
+  }
 }
 
 const server = createServer(async (req, res) => {
@@ -78,7 +91,7 @@ const exists = file => fs.stat(file).then(() => true, () => false);
 function launch(executable, args = [], extra = {}, timeout = 120_000) {
   const env = { ...process.env, ELECTRON_RUNTIME_ROOT: cache, MYAPP_SMOKE: '1', ...extra };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(executable, args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(executable, args, { env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   ownedProcesses.add(child);
   const record = { executable, args, stdout: '', stderr: '', code: null };
   processRecords.push(record);
@@ -127,19 +140,21 @@ async function publishVersion(version, artifacts, runtimeVersion = options['runt
   if (manifest) await fs.writeFile(previous, JSON.stringify(manifest));
   manifest = await publish({
     'app-id': 'com.example.myapp', version, 'runtime-version': runtimeVersion,
-    'app-zip': artifacts.zip, 'runtime-zip': runtimeZip, 'base-url': baseUrl, out: source,
+    'app-zip': artifacts.zip, 'runtime-zip': runtimeZip, platform: runtimePlatform, 'base-url': baseUrl, out: source,
     'signing-key': privateKeyPath, ...(manifest ? { 'previous-manifest': previous } : {}), ...extra,
   });
 }
 async function install(name, artifacts, appId = 'com.example.myapp', manifestPath = '/manifest.json') {
   const directory = path.join(work, name);
   await fs.mkdir(directory, { recursive: true });
-  await fs.copyFile(options.shell, path.join(directory, 'shell.exe'));
+  const executable = path.join(directory, launcherName);
+  await fs.copyFile(options.shell, executable);
+  if (process.platform !== 'win32') await fs.chmod(executable, 0o755);
   await fs.cp(artifacts.out, path.join(directory, 'resources'), { recursive: true });
-  await fs.writeFile(path.join(directory, 'shell.toml'), `app_id = ${JSON.stringify(appId)}\nrequired_runtime = ${JSON.stringify(options['runtime-version'])}\napp_version = "1.0.0"\nmanifest_url = ${JSON.stringify(baseUrl + manifestPath)}\nallow_localhost_http = true\nmanifest_public_key = ${JSON.stringify(publicKeyBase64)}\n`);
-  return { directory, executable: path.join(directory, 'shell.exe'), pending: path.join(directory, 'updates/pending.json'), active: path.join(directory, 'updates/active.json') };
+  await fs.writeFile(path.join(directory, configName), `app_id = ${JSON.stringify(appId)}\nrequired_runtime = ${JSON.stringify(options['runtime-version'])}\napp_version = "1.0.0"\nmanifest_url = ${JSON.stringify(baseUrl + manifestPath)}\nallow_localhost_http = true\nmanifest_public_key = ${JSON.stringify(publicKeyBase64)}\n`);
+  return { directory, executable, pending: path.join(directory, 'updates/pending.json'), active: path.join(directory, 'updates/active.json') };
 }
-const runtimePath = (root, version) => path.join(root, 'versions', 'win32-x64', `v${version}`);
+const runtimePath = (root, version) => path.join(root, 'versions', runtimePlatform, `v${version}`);
 const requestCount = version => requests.filter(url => url.startsWith(`/electron-v${version}-`)).length;
 let appA, appB, appC;
 try {
@@ -269,6 +284,7 @@ try {
     const orphan = await install('app-orphan', report.baseline);
     const running = launch(orphan.executable, ['--headless', '--no-update'], { ELECTRON_RUNTIME_ROOT: cache2, ERS_SMOKE_HOLD_MS: '6000' });
     await waitFor(() => running.record.stdout.includes('SMOKE:'), 'orphan fixture did not reach real UI readiness');
+    // Kill only the launcher; the detached Electron child must keep its lease alive until it exits.
     running.child.kill(); await running.done;
     await run(orphan.executable, ['--uninstall'], { ELECTRON_RUNTIME_ROOT: cache2 });
     assert(await exists(runtimePath(cache2, options['runtime-version'])));

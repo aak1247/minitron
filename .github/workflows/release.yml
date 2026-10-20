@@ -1,0 +1,148 @@
+name: Native releases
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (must match Cargo version)
+        required: true
+        default: v0.1.0
+      publish:
+        description: Publish the release after all platform tests pass
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: macos-15-intel
+            platform: macos-x64
+          - os: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Validate release version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const version = /^version = "([^"]+)"/m.exec(fs.readFileSync("shell/Cargo.toml", "utf8"))[1]; if (process.env.TAG !== `v${version}`) throw new Error(`Tag must be v${version}`);'
+      - name: Linux build and desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-0 libgtk-3-dev libnss3 libasound2 libgbm1 xvfb
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt
+          rustup default 1.92.0
+      - name: Restore Rust cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shell/target
+          key: release-${{ matrix.platform }}-rust-1.92-${{ hashFiles('shell/Cargo.lock') }}-v1
+          restore-keys: |
+            release-${{ matrix.platform }}-rust-1.92-
+      - name: Install packaging tools
+        run: npm --prefix app ci --no-audit --no-fund
+      - name: Unit tests
+        run: |
+          npm --prefix app test
+          node --test scripts/publish-release.test.mjs scripts/build-app.test.mjs scripts/install.test.mjs
+          cargo fmt --manifest-path shell/Cargo.toml --all -- --check
+          cargo test --manifest-path shell/Cargo.toml --locked
+      - name: Build native launcher
+        run: cargo build --manifest-path shell/Cargo.toml --locked --release
+      - name: Verify help languages
+        run: node scripts/check-launcher-languages.mjs "shell/target/release/minitron${{ runner.os == 'Windows' && '.exe' || '' }}"
+      - name: Download verified Electron runtimes
+        run: node scripts/download-e2e-runtimes.mjs
+      - name: Windows end-to-end tests and installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/e2e-windows.ps1 -RuntimeZip "$PWD/dist/electron-zips/electron-v32.2.0-win32-x64.zip" -UpgradeRuntimeZip "$PWD/dist/electron-zips/electron-v33.3.1-win32-x64.zip"
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          ./scripts/build-windows.ps1 -SkipRustBuild -RuntimeVersion 32.2.0 -ManifestUrl https://example.invalid/myapp/manifest.json -Makensis 'C:/Program Files (x86)/NSIS/makensis.exe'
+      - name: Linux end-to-end tests
+        if: runner.os == 'Linux'
+        run: xvfb-run -a bash scripts/e2e-unix.sh --runtime-zip "$PWD/dist/electron-zips/electron-v32.2.0-linux-x64.zip" --upgrade-runtime-zip "$PWD/dist/electron-zips/electron-v33.3.1-linux-x64.zip"
+      - name: macOS end-to-end tests
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: bash scripts/e2e-unix.sh --runtime-zip "$PWD/dist/electron-zips/electron-v32.2.0-darwin-$(node -p process.arch).zip" --upgrade-runtime-zip "$PWD/dist/electron-zips/electron-v33.3.1-darwin-$(node -p process.arch).zip"
+      - name: Package native binary and record sizes
+        run: node scripts/package-launcher.mjs
+      - name: Save release binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: tests-${{ matrix.platform }}
+          path: |
+            dist/e2e-report.json
+            dist/windows/1.0.0/build.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist/release
+      - name: Collect checksums and size data
+        run: node scripts/collect-release.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-all
+          path: dist/release/
+          retention-days: 14
+      - name: Publish GitHub release
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          TARGET: ${{ github.sha }}
+        run: |
+          gh release create "$TAG" --target "$TARGET" --title "minitron $TAG" --notes-file dist/release/release-notes.md dist/release/*.zip dist/release/*.tar.gz dist/release/SHA256SUMS dist/release/sizes.json dist/release/install.ps1 dist/release/install.sh
