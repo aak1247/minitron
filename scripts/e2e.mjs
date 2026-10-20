@@ -31,6 +31,7 @@ let truncateNextRuntime = false;
 let rangedRequests = 0;
 const requests = [];
 const ownedProcesses = new Set();
+const processRecords = [];
 const results = [];
 const report = { started: new Date().toISOString(), work, platform: `${process.platform}-${process.arch}`, results };
 
@@ -80,10 +81,11 @@ function launch(executable, args = [], extra = {}, timeout = 120_000) {
   const child = spawn(executable, args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   ownedProcesses.add(child);
   const record = { executable, args, stdout: '', stderr: '', code: null };
+  processRecords.push(record);
   child.stdout.on('data', data => record.stdout += data);
   child.stderr.on('data', data => record.stderr += data);
   const done = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { terminateOwnedTree(child); reject(new Error(`Timed out: ${executable} ${args.join(' ')}\n${record.stderr.slice(-3000)}`)); }, timeout);
+    const timer = setTimeout(() => { terminateOwnedTree(child); reject(new Error(`Timed out: ${executable} ${args.join(' ')}\nSTDOUT:\n${record.stdout.slice(-3000)}\nSTDERR:\n${record.stderr.slice(-3000)}`)); }, timeout);
     child.on('error', error => { clearTimeout(timer); ownedProcesses.delete(child); reject(error); });
     child.on('exit', (code, signal) => { clearTimeout(timer); ownedProcesses.delete(child); record.code = code; record.signal = signal; resolve(record); });
   });
@@ -351,6 +353,14 @@ try {
   for (const child of ownedProcesses) terminateOwnedTree(child);
   await new Promise(resolve => server.close(resolve));
   report.finished = new Date().toISOString(); report.requests = requests;
+  if (!report.passed) {
+    report.processes = processRecords.map(record => ({ ...record, stdout: record.stdout.slice(-16000), stderr: record.stderr.slice(-16000) }));
+    report.runtimeFiles = [];
+    for (const relative of await fs.readdir(cache, { recursive: true }).catch(() => [])) {
+      const metadata = await fs.stat(path.join(cache, relative)).catch(() => null);
+      if (metadata?.isFile()) report.runtimeFiles.push({ path: relative, bytes: metadata.size });
+    }
+  }
   await fs.mkdir(path.dirname(path.resolve(options.report)), { recursive: true });
   await fs.writeFile(options.report, JSON.stringify(report, null, 2));
   console.log(`REPORT ${path.resolve(options.report)}`);

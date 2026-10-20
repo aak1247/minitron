@@ -36,6 +36,15 @@ jobs:
         run: |
           rustup toolchain install 1.92.0 --profile minimal --component rustfmt
           rustup default 1.92.0
+      - name: Restore Rust build cache
+        id: rust-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shell/target
+          key: windows-rust-1.92-${{ hashFiles('shell/Cargo.lock') }}-v1
       - name: Install app tooling
         working-directory: app
         run: npm ci --no-audit --no-fund
@@ -90,3 +99,12 @@ jobs:
             dist/e2e-report.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Save Rust build cache
+        if: ${{ always() && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shell/target
+          key: windows-rust-1.92-${{ hashFiles('shell/Cargo.lock') }}-v1

@@ -59,6 +59,16 @@ pub fn locate(key: &RuntimeKey) -> Result<Runtime> {
 /// Install from a verified manifest artifact when this exact runtime is absent
 /// or incomplete. Concurrent callers for the same key serialize across processes.
 pub fn ensure(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) -> Result<Runtime> {
+    let result = ensure_inner(key, artifact, on_progress);
+    if let Err(error) = &result {
+        // GUI preparation keeps its retry window open, so the main error handler
+        // may not run. Retain the underlying failure in redirected diagnostics.
+        eprintln!("RUNTIME_INSTALL_ERROR: {error:#}");
+    }
+    result
+}
+
+fn ensure_inner(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) -> Result<Runtime> {
     validate_host_key(key)?;
     validate_artifact(artifact)?;
 
@@ -96,6 +106,7 @@ pub fn ensure(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) ->
         .join("download");
     std::fs::create_dir_all(&download_dir).context("create persistent download directory")?;
     let package = download::download(artifact, &download_dir, on_progress)?;
+    eprintln!("RUNTIME_ARCHIVE_VERIFIED:{}", key_id(key));
 
     let stage = unique_staging_path(&root, key);
     std::fs::create_dir_all(&stage).context("create runtime staging directory")?;
@@ -103,6 +114,7 @@ pub fn ensure(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) ->
     let _cleanup = RemoveDirOnDrop(stage.clone());
 
     download::unzip(&package, &extracted).context("extract Electron runtime")?;
+    eprintln!("RUNTIME_EXTRACTED:{}", key_id(key));
 
     let (electron_bin, default_app_asar, bin_meta, asar_meta) =
         validate_runtime_structure(&extracted, key)?;
@@ -144,6 +156,7 @@ pub fn ensure(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) ->
     // A verified archive is reproducible from the committed runtime. Drop the
     // persistent partial/complete download only after the commit marker passes.
     let _ = std::fs::remove_dir_all(download_dir);
+    eprintln!("RUNTIME_READY:{}", key_id(key));
     Ok(runtime)
 }
 
