@@ -24,10 +24,25 @@ pub fn is_alive(pid: u32) -> bool {
     }
     #[cfg(not(windows))]
     {
+        // kill() interprets negative values as process groups, not process IDs.
+        // A stale or malformed u32 lease must never become kill(-1, 0).
+        if pid > i32::MAX as u32 {
+            return false;
+        }
         unsafe {
             libc::kill(pid as i32, 0) == 0
                 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn current_process_is_alive_but_invalid_ids_are_not() {
+        assert!(super::is_alive(std::process::id()));
+        assert!(!super::is_alive(0));
+        assert!(!super::is_alive(u32::MAX));
     }
 }
 

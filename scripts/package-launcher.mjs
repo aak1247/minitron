@@ -31,7 +31,8 @@ try {
     '--out', 'dist/example', '--runtime-version', '32.2.0',
     '--manifest-url', 'https://example.invalid/myapp/manifest.json']);
   const runtimeZip = path.resolve(`dist/electron-zips/electron-v32.2.0-${process.platform}-${process.arch}.zip`);
-  const runtimeSize = spawnSync('python', ['-c',
+  const python = process.env.PYTHON || (process.platform === 'win32' ? 'py' : 'python3');
+  const runtimeSize = spawnSync(python, [...(python === 'py' ? ['-3'] : []), '-c',
     'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); print(sum(i.file_size for i in z.infolist() if not i.is_dir()))', runtimeZip], { encoding: 'utf8' });
   if (runtimeSize.error || runtimeSize.status !== 0) throw runtimeSize.error || new Error(runtimeSize.stderr);
   await fs.copyFile(binary, path.join(staging, executable));

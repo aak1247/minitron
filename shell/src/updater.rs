@@ -878,9 +878,16 @@ mod tests {
 
     #[test]
     fn release_paths_are_version_and_hash_scoped() {
-        let root = Path::new(r"C:\App");
+        let root = Path::new("app-root");
         let path = release_resources_path(root, "1.2.3", &"a".repeat(64));
-        assert!(path.ends_with(r"updates\releases\1.2.3\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\resources"));
+        assert_eq!(
+            path,
+            root.join("updates")
+                .join("releases")
+                .join("1.2.3")
+                .join("a".repeat(64))
+                .join("resources")
+        );
     }
 
     #[test]

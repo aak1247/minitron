@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,11 +115,6 @@ function startReleaseFixture(archiveName, archiveContents) {
 
       const assetPath = `${prefix}/download/${releaseTag}/${archiveName}`;
       const sumsPath = `${prefix}/download/${releaseTag}/SHA256SUMS`;
-      if (route === 'missing') {
-        response.writeHead(404);
-        response.end('not found');
-        return;
-      }
       if (requestUrl.pathname === sumsPath) {
         const checksum = sha256(archiveContents);
         const reportedChecksum = route === 'bad'
@@ -130,6 +125,11 @@ function startReleaseFixture(archiveName, archiveContents) {
         return;
       }
       if (requestUrl.pathname === assetPath) {
+        if (route === 'missing') {
+          response.writeHead(404);
+          response.end('not found');
+          return;
+        }
         response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
         response.end(archiveContents);
         return;
@@ -170,7 +170,7 @@ function getInstallerRunners(target) {
   });
 }
 
-function runInstaller(target, args, runner) {
+function runInstaller(target, args, runner, workingDirectory = repositoryRoot) {
   let executable;
   let executableArgs;
   if (target.os === 'windows') {
@@ -190,7 +190,7 @@ function runInstaller(target, args, runner) {
 
   return new Promise((resolveProcess, rejectProcess) => {
     const child = spawn(executable, executableArgs, {
-      cwd: repositoryRoot,
+      cwd: workingDirectory,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -215,13 +215,15 @@ function runInstaller(target, args, runner) {
   });
 }
 
-function commandArgs(target, installDirectory, baseUrl, includeVersion = false) {
+function commandArgs(target, installDirectory, baseUrl, includeVersion = false, includeDirectory = true) {
   if (target.os === 'windows') {
-    const args = ['-InstallDir', installDirectory, '-BaseUrl', baseUrl];
+    const args = ['-BaseUrl', baseUrl];
+    if (includeDirectory) args.unshift('-InstallDir', installDirectory);
     if (includeVersion) args.push('-Version', releaseTag);
     return { windows: args, posix: [] };
   }
-  const args = ['--dir', installDirectory, '--base-url', baseUrl];
+  const args = ['--base-url', baseUrl];
+  if (includeDirectory) args.unshift('--dir', installDirectory);
   if (includeVersion) args.push('--version', releaseTag);
   return { windows: [], posix: args };
 }
@@ -271,7 +273,21 @@ async function runInstallerTests(t) {
       assert.deepEqual(readFileSync(join(successDirectory, target.binaryName)), binaryContents);
       assert.equal(readFileSync(join(successDirectory, 'minitron.toml'), 'utf8'), 'user config stays\n');
       assert.equal(readFileSync(join(successDirectory, 'resources', 'marker.txt'), 'utf8'), 'user resource stays\n');
+      assert.deepEqual(readdirSync(successDirectory).sort(), ['minitron.toml', target.binaryName, 'resources'].sort());
       assert.match(getOutput(successResult), /Installed minitron to:/);
+
+      const defaultDirectory = join(tempRoot, `${runnerSlug} default directory`);
+      mkdirSync(defaultDirectory);
+      writeFileSync(join(defaultDirectory, 'minitron.toml'), 'default directory config stays\n');
+      const defaultResult = await runInstaller(
+        target,
+        commandArgs(target, defaultDirectory, `${fixture.baseUrl}/good`, false, false),
+        runner,
+        defaultDirectory,
+      );
+      assertCommandSucceeded(defaultResult, `${runnerLabel}: installing into the current directory by default`);
+      assert.deepEqual(readFileSync(join(defaultDirectory, target.binaryName)), binaryContents);
+      assert.equal(readFileSync(join(defaultDirectory, 'minitron.toml'), 'utf8'), 'default directory config stays\n');
 
       const checksumDirectory = join(tempRoot, `${runnerSlug} checksum failure`);
       mkdirSync(checksumDirectory);
@@ -292,7 +308,7 @@ async function runInstallerTests(t) {
       assert.equal(readFileSync(join(downloadDirectory, 'minitron.toml'), 'utf8'), 'config before download failure\n');
     }
 
-    t.diagnostic(`Covered ${target.os}/${target.arch} (${getInstallerRunners(target).map((runner) => basename(runner)).join(', ')}): latest install, download failure, checksum failure, and existing-file preservation.`);
+    t.diagnostic(`Covered ${target.os}/${target.arch} (${getInstallerRunners(target).map((runner) => basename(runner)).join(', ')}): latest install, current-directory default, download failure, checksum failure, and existing-file preservation.`);
   } finally {
     if (fixture) {
       fixture.server.closeAllConnections?.();
