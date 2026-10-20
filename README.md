@@ -18,6 +18,8 @@ The verified Windows x64 example has a **9.63 MiB application directory** and a 
 
 **Windows x64 is the validated release platform.** macOS and Linux still require release and end-to-end validation on their respective systems.
 
+![minitron runtime setup in English](docs/images/launcher-en.png)
+
 ## How it works
 
 ```text
