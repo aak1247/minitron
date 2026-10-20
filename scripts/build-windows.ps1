@@ -47,7 +47,7 @@ if (-not $SkipRustBuild -and -not $ShellBinary) {
         if ($LASTEXITCODE -ne 0) { throw 'Rust launcher build failed' }
     } finally { Pop-Location; $env:CARGO_HOME = $previousCargoHome }
 }
-if (-not $ShellBinary) { $ShellBinary = Join-Path $repoRoot "shell/target/$($Configuration.ToLowerInvariant())/electron-shell.exe" }
+if (-not $ShellBinary) { $ShellBinary = Join-Path $repoRoot "shell/target/$($Configuration.ToLowerInvariant())/minitron.exe" }
 if (-not (Test-Path -LiteralPath $ShellBinary -PathType Leaf)) { throw "Missing launcher: $ShellBinary" }
 if (-not (Test-Path -LiteralPath (Join-Path $resources 'app.asar') -PathType Leaf)) { throw "Missing resources: $resources" }
 # Only named resources are copied, so the source ZIP and build tooling cannot enter the application.
@@ -56,7 +56,7 @@ $stagingBoundary = [IO.Path]::GetFullPath($staging).TrimEnd('\') + '\'
 if (-not $targetResources.StartsWith($stagingBoundary, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid staging resources path' }
 if (Test-Path -LiteralPath $targetResources) { Remove-Item -LiteralPath $targetResources -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $targetResources | Out-Null
-Copy-Item -LiteralPath $ShellBinary -Destination (Join-Path $staging 'shell.exe') -Force
+Copy-Item -LiteralPath $ShellBinary -Destination (Join-Path $staging 'minitron.exe') -Force
 Copy-Item -LiteralPath (Join-Path $resources 'app.asar') -Destination (Join-Path $staging 'resources/app.asar') -Force
 $unpacked = Join-Path $resources 'app.asar.unpacked'
 if (Test-Path -LiteralPath $unpacked -PathType Container) { Copy-Item -LiteralPath $unpacked -Destination (Join-Path $staging 'resources') -Recurse -Force }
@@ -68,7 +68,7 @@ $toml = @(
     ('allow_localhost_http = ' + $AllowLocalhostHttp.IsPresent.ToString().ToLowerInvariant())
 )
 if ($ManifestPublicKey) { $toml += 'manifest_public_key = ' + (ConvertTo-Json -Compress $ManifestPublicKey) }
-[IO.File]::WriteAllText((Join-Path $staging 'shell.toml'), ($toml -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $staging 'minitron.toml'), ($toml -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
 $unexpectedRuntime = Get-ChildItem -LiteralPath $staging -Recurse -File | Where-Object { $_.Name -in @('electron.exe', 'icudtl.dat', 'chrome_100_percent.pak') }
 if ($unexpectedRuntime) { throw 'The application package unexpectedly contains Electron runtime files.' }
 

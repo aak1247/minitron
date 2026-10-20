@@ -46,8 +46,8 @@ fn run() -> Result<i32> {
     }
     if args.first().is_some_and(|x| x == "--help") {
         println!("minitron {SHELL_VERSION}\n{}", i18n::detect().text(
-            "Usage: shell [--offline] [--headless] [--no-update] [-- app arguments]\n       shell --check-update | --rollback | --uninstall | --version\nSet ELECTRON_RUNTIME_ROOT to override the user runtime cache.\nSet MINITRON_LANG=en or zh to override the system display language.",
-            "用法：shell [--offline] [--headless] [--no-update] [-- 应用参数]\n      shell --check-update | --rollback | --uninstall | --version\n设置 ELECTRON_RUNTIME_ROOT 可指定共享运行时缓存目录。\n设置 MINITRON_LANG=en 或 zh 可覆盖系统显示语言。"
+            "Usage: minitron [--offline] [--headless] [--no-update] [-- app arguments]\n       minitron --check-update | --rollback | --uninstall | --version\nSet ELECTRON_RUNTIME_ROOT to override the user runtime cache.\nSet MINITRON_LANG=en or zh to override the system display language.",
+            "用法：minitron [--offline] [--headless] [--no-update] [-- 应用参数]\n      minitron --check-update | --rollback | --uninstall | --version\n设置 ELECTRON_RUNTIME_ROOT 可指定共享运行时缓存目录。\n设置 MINITRON_LANG=en 或 zh 可覆盖系统显示语言。"
         ));
         return Ok(0);
     }

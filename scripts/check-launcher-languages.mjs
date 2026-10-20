@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
-const executable = path.resolve(process.argv[2] || 'shell/target/release/electron-shell.exe');
+const executable = path.resolve(process.argv[2] || 'shell/target/release/minitron.exe');
 for (const [language, expected] of [
   ['en', /Usage:/],
   ['zh', /用法/],

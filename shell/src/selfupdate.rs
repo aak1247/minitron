@@ -205,6 +205,12 @@ pub fn maybe_stage(cfg: &ShellConfig, manifest: &Manifest, args: &[OsString]) ->
         hash_file(&staged)?.eq_ignore_ascii_case(&expected_sha),
         "staged shell executable hash mismatch"
     );
+    // HTTP downloads have no executable bit on Unix. Preserve the installed
+    // launcher's permissions before executing the verified replacement.
+    fs::set_permissions(
+        &staged,
+        fs::metadata(std::env::current_exe()?)?.permissions(),
+    )?;
     verify_shell_version(&staged, &shell.version)?;
     let backup = updates
         .join("backup")

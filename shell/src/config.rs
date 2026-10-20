@@ -1,4 +1,4 @@
-//! shell.toml parsing and per-user runtime paths.
+//! minitron.toml parsing and per-user runtime paths.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -29,7 +29,22 @@ impl ShellConfig {
             .parent()
             .context("no exe dir")?
             .to_path_buf();
-        Self::load_from(&exe_dir.join("shell.toml"))
+        Self::load_from(&Self::config_path(&exe_dir))
+    }
+
+    // Prefer the branded name while retaining existing installations.
+    fn config_path(directory: &Path) -> PathBuf {
+        let preferred = directory.join("minitron.toml");
+        if preferred.exists() {
+            preferred
+        } else {
+            let legacy = directory.join("shell.toml");
+            if legacy.exists() {
+                legacy
+            } else {
+                preferred
+            }
+        }
     }
 
     /// Load configuration from an explicit path. The production loader uses
@@ -38,7 +53,7 @@ impl ShellConfig {
     pub fn load_from(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("read shell config {}", path.display()))?;
-        let config: Self = toml::from_str(&text).context("parse shell.toml")?;
+        let config: Self = toml::from_str(&text).context("parse minitron configuration")?;
         anyhow::ensure!(!config.app_id.trim().is_empty(), "app_id must not be empty");
         anyhow::ensure!(
             !config.required_runtime.trim().is_empty(),
@@ -161,6 +176,18 @@ mod tests {
         assert!(!cfg.allow_localhost_http);
         assert_eq!(cfg.manifest_public_key, None);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn branded_configuration_precedes_legacy_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let preferred = dir.path().join("minitron.toml");
+        let legacy = dir.path().join("shell.toml");
+        assert_eq!(ShellConfig::config_path(dir.path()), preferred);
+        std::fs::write(&legacy, "legacy").unwrap();
+        assert_eq!(ShellConfig::config_path(dir.path()), legacy);
+        std::fs::write(&preferred, "new").unwrap();
+        assert_eq!(ShellConfig::config_path(dir.path()), preferred);
     }
 
     #[test]

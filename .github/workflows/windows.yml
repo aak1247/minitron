@@ -71,7 +71,7 @@ jobs:
         run: |
           cargo build --manifest-path shell/Cargo.toml --locked --example launcher-preview
           if ($LASTEXITCODE -ne 0) { throw 'Launcher preview build failed' }
-          node scripts/check-launcher-languages.mjs ./shell/target/release/electron-shell.exe
+          node scripts/check-launcher-languages.mjs ./shell/target/release/minitron.exe
           if ($LASTEXITCODE -ne 0) { throw 'Launcher help language check failed' }
           $output = Join-Path (Get-Location) 'dist/i18n-preview'
           New-Item -ItemType Directory -Force -Path $output | Out-Null

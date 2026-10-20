@@ -89,7 +89,7 @@ export async function publish(options) {
   };
   if (options.shell) {
     if (!options['shell-version']) throw new Error('--shell requires --shell-version');
-    manifest.shell = { version: options['shell-version'], platforms: { [platform]: await artifact(options.shell, `shell-${options['shell-version']}-${platform}`, process.platform === 'win32' ? 'exe' : 'bin') } };
+    manifest.shell = { version: options['shell-version'], platforms: { [platform]: await artifact(options.shell, `minitron-${options['shell-version']}-${platform}`, platform.startsWith('win32-') ? 'exe' : 'bin') } };
   }
   if (options['signing-key']) {
     const privateKey = createPrivateKey(await fs.readFile(options['signing-key']));

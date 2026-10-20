@@ -800,7 +800,6 @@ mod tests {
         let root = temp_root("windows-dll");
         let key = test_key();
         if !key.platform.starts_with("win32-") {
-            std::fs::remove_dir_all(root).unwrap();
             return;
         }
         write_valid_runtime(&root, &key);

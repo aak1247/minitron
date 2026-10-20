@@ -17,7 +17,7 @@ if (-not $RuntimeZip) {
 if (-not $UpgradeRuntimeZip) {
     $UpgradeRuntimeZip = (Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'electron/Cache') -Recurse -Filter "electron-v$UpgradeRuntimeVersion-win32-x64.zip" | Select-Object -First 1).FullName
 }
-if (-not $ShellBinary) { $ShellBinary = Join-Path $repoRoot 'shell/target/release/electron-shell.exe' }
+if (-not $ShellBinary) { $ShellBinary = Join-Path $repoRoot 'shell/target/release/minitron.exe' }
 foreach ($file in @($RuntimeZip, $UpgradeRuntimeZip, $ShellBinary)) {
     if (-not $file -or -not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing E2E input $file. Build the launcher and pass official runtime ZIP paths." }
 }
@@ -32,8 +32,8 @@ if (-not $NewShellBinary) {
         if ($LASTEXITCODE -ne 0) { throw 'Updated-shell fixture build failed' }
         $toolDir = Join-Path $repoRoot 'dist/test-tools'
         New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
-        $NewShellBinary = Join-Path $toolDir 'shell-0.1.1.exe'
-        Copy-Item -LiteralPath (Join-Path $repoRoot 'shell/target/debug/electron-shell.exe') -Destination $NewShellBinary -Force
+        $NewShellBinary = Join-Path $toolDir 'minitron-0.1.1.exe'
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'shell/target/debug/minitron.exe') -Destination $NewShellBinary -Force
     } finally { Pop-Location; $env:ERS_BUILD_VERSION = $previousVersion; $env:CARGO_HOME = $previousCargoHome }
 }
 if (-not $Report) { $Report = Join-Path $repoRoot 'dist/e2e-report.json' }

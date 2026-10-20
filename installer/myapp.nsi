@@ -34,8 +34,8 @@ UninstPage instfiles
 
 Section "Install"
     SetOutPath "$INSTDIR"
-    File /oname=shell.exe "${STAGING_DIR}\shell.exe"
-    File "${STAGING_DIR}\shell.toml"
+    File /oname=minitron.exe "${STAGING_DIR}\minitron.exe"
+    File "${STAGING_DIR}\minitron.toml"
 
     SetOutPath "$INSTDIR\resources"
     File "${STAGING_DIR}\resources\app.asar"
@@ -44,7 +44,7 @@ Section "Install"
     File /r "${STAGING_DIR}\resources\app.asar.unpacked\*"
 !endif
 
-    CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\shell.exe"
+    CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\minitron.exe"
     WriteUninstaller "$INSTDIR\uninstall.exe"
 
     ; Store install metadata for the shell and uninstaller.
@@ -54,14 +54,14 @@ SectionEnd
 
 Section "Uninstall"
     ; Keep the installation intact if runtime unregistering fails.
-    ExecWait '"$INSTDIR\shell.exe" --uninstall' $0
+    ExecWait '"$INSTDIR\minitron.exe" --uninstall' $0
     ${If} $0 != 0
         MessageBox MB_ICONSTOP "Unable to unregister this installation (exit code $0). No files were removed."
         Abort
     ${EndIf}
 
-    Delete "$INSTDIR\shell.exe"
-    Delete "$INSTDIR\shell.toml"
+    Delete "$INSTDIR\minitron.exe"
+    Delete "$INSTDIR\minitron.toml"
     RMDir /r "$INSTDIR\resources"
     RMDir /r "$INSTDIR\updates"
     Delete "$INSTDIR\uninstall.exe"

@@ -1,5 +1,5 @@
 [package]
-name = "electron-shell"
+name = "minitron"
 version = "0.1.0"
 edition = "2021"
 description = "Electron shared-runtime bootstrap & updater shell"
