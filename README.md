@@ -147,7 +147,9 @@ npm test
 cd ../shell
 cargo test --locked
 cargo check --locked
+cargo build --locked --release
 cd ..
+node scripts/check-launcher-languages.mjs ./shell/target/release/electron-shell.exe
 ./scripts/e2e-windows.ps1 -RuntimeZip C:/downloads/electron-v32.2.0-win32-x64.zip -UpgradeRuntimeZip C:/downloads/electron-v33.3.1-win32-x64.zip
 ```
 
