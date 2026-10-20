@@ -11,6 +11,17 @@ const releaseTxid = process.env.ERS_RELEASE_TXID || "";
 let smokeTimer;
 let readyReported = false;
 
+if (smokeMode) {
+  // Hosted Windows runners may have no usable accelerated graphics device.
+  // Smoke coverage exercises the real page, preload and IPC with software GPU.
+  app.disableHardwareAcceleration();
+  console.error("SMOKE_BOOTSTRAP: waiting for Electron and renderer readiness");
+  smokeTimer = setTimeout(() => {
+    console.error("Timed out waiting for Electron/renderer/preload IPC readiness");
+    app.exit(1);
+  }, 30000);
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 960,
@@ -114,12 +125,6 @@ app.whenReady().then(() => {
     return;
   }
 
-  if (smokeMode) {
-    smokeTimer = setTimeout(() => {
-      console.error("Timed out waiting for renderer/preload IPC readiness");
-      app.exit(1);
-    }, 30000);
-  }
   createWindow();
 });
 app.on("window-all-closed", () => app.quit());
