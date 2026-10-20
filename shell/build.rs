@@ -8,6 +8,10 @@ fn main() {
     );
     println!(
         "cargo:rerun-if-changed={}",
+        manifest_dir.join("ui/translations.slint").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
         manifest_dir.join("assets/icon.ico").display()
     );
     println!(

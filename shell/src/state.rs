@@ -30,7 +30,7 @@ fn begin(
     }
     if let Some(w) = window.upgrade() {
         w.set_stage("checking".into());
-        w.set_message("正在连接并检查运行环境…".into());
+        w.set_message("".into());
         w.set_progress(0.0);
         w.set_transfer_label("".into());
         w.set_indeterminate(true);
@@ -54,6 +54,7 @@ fn begin(
 
 pub fn install_runtime(key: &RuntimeKey, artifact: &Artifact) -> Result<runtime::Runtime> {
     let window = ShellWindow::new()?;
+    crate::i18n::apply(&window);
     window.set_runtime_label(format!("Electron {} · {}", key.version, key.platform).into());
     let busy = Arc::new(AtomicBool::new(false));
     let outcome: Outcome = Arc::new(Mutex::new(None));
@@ -117,7 +118,6 @@ pub fn install_runtime(key: &RuntimeKey, artifact: &Artifact) -> Result<runtime:
                     )
                     .into(),
                 );
-                w.set_message("正在下载所需运行环境，请保持网络连接。".into());
             }
             if preparing {
                 return;

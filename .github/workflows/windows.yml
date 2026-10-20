@@ -45,6 +45,7 @@ jobs:
             ~/.cargo/git
             shell/target
           key: windows-rust-1.92-${{ hashFiles('shell/Cargo.lock') }}-v1
+          restore-keys: windows-rust-1.92-
       - name: Install app tooling
         working-directory: app
         run: npm ci --no-audit --no-fund
@@ -66,6 +67,29 @@ jobs:
       - name: Build release application and installer
         run: |
           ./scripts/build-windows.ps1 -RuntimeVersion 32.2.0 -ManifestUrl https://example.invalid/myapp/manifest.json -Makensis 'C:/Program Files (x86)/NSIS/makensis.exe'
+      - name: Verify English and Chinese launcher UI
+        run: |
+          cargo build --manifest-path shell/Cargo.toml --locked --example launcher-preview
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher preview build failed' }
+          $output = Join-Path (Get-Location) 'dist/i18n-preview'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          $previousLanguage = $env:MINITRON_LANG
+          try {
+            foreach ($language in @('en', 'zh')) {
+              $env:MINITRON_LANG = $language
+              $help = & ./shell/target/release/electron-shell.exe --help
+              $expected = if ($language -eq 'zh') { '用法' } else { 'Usage:' }
+              if ($LASTEXITCODE -ne 0 -or ($help -join "`n") -notmatch $expected) { throw "Wrong help language: $language" }
+              foreach ($stage in @('checking', 'downloading', 'verifying', 'error', 'done')) {
+                & ./shell/target/debug/examples/launcher-preview.exe $stage (Join-Path $output "$language-$stage.ppm")
+                if ($LASTEXITCODE -ne 0) { throw "Preview failed: $language/$stage" }
+              }
+              foreach ($action in @('details', 'retry')) {
+                & ./shell/target/debug/examples/launcher-preview.exe error (Join-Path $output "$language-error-$action.ppm") $action
+                if ($LASTEXITCODE -ne 0) { throw "Control test failed: $language/$action" }
+              }
+            }
+          } finally { $env:MINITRON_LANG = $previousLanguage }
       - name: Download and verify E2E runtimes
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e }}
         run: |
@@ -97,6 +121,7 @@ jobs:
           path: |
             dist/windows/1.0.0/
             dist/e2e-report.json
+            dist/i18n-preview/
           if-no-files-found: warn
           retention-days: 7
       - name: Save Rust build cache

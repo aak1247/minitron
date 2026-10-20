@@ -6,6 +6,8 @@ use std::io::Write;
 use std::time::Duration;
 
 slint::include_modules!();
+#[path = "../src/i18n.rs"]
+mod i18n;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -17,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("expected checking, downloading, verifying, error, or done".into());
     }
     let ui = ShellWindow::new()?;
+    i18n::apply(&ui);
     ui.set_stage(stage.into());
     ui.set_runtime_label("Electron 32.2.0 · win32-x64".into());
     ui.set_progress(if stage == "done" || stage == "verifying" {
@@ -26,12 +29,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     ui.set_indeterminate(stage == "checking" || stage == "verifying");
     ui.set_message(if stage == "error" {
-        "下载运行环境失败：连接已中断。\n\n示例诊断信息：\nread artifact response: connection reset by peer\n\n已下载的部分文件会保留，重试时将尝试断点续传。".into()
-    } else if stage == "checking" {
-        "正在连接并检查运行环境…".into()
-    } else {
-        "正在下载所需运行环境，请保持网络连接。".into()
-    });
+        i18n::detect().text(
+            "Runtime download interrupted.\n\nExample diagnostics:\nread artifact response: connection reset by peer\n\nDownloaded files are retained. Retry will attempt to resume the download.",
+            "下载运行环境失败：连接已中断。\n\n示例诊断信息：\nread artifact response: connection reset by peer\n\n已下载的部分文件会保留，重试时将尝试断点续传。"
+        ).into()
+    } else { "".into() });
     if stage != "checking" {
         ui.set_transfer_label(
             if stage == "downloading" {
@@ -48,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_stage("checking".into());
             ui.set_progress(0.0);
             ui.set_transfer_label("".into());
-            ui.set_message("正在重新连接并检查运行环境…".into());
+            ui.set_message("".into());
             ui.set_indeterminate(true);
         }
     });

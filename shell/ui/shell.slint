@@ -1,5 +1,7 @@
 // Only the preparation path creates a window; a ready runtime launches directly.
 import { Button, ProgressIndicator, TextEdit } from "std-widgets.slint";
+export { I18n } from "translations.slint";
+import { I18n } from "translations.slint";
 
 component Step inherits Rectangle {
     in property <string> number;
@@ -38,16 +40,17 @@ component Step inherits Rectangle {
 }
 
 export component ShellWindow inherits Window {
-    title: "minitron · 应用启动器";
+    title: "minitron · " + I18n.labels.launcher;
     icon: @image-url("../assets/icon.png");
     preferred-width: 660px; preferred-height: 500px;
     min-width: 620px; min-height: 500px;
     background: #f4f6fc;
-    default-font-family: "Microsoft YaHei UI";
+    default-font-family: I18n.language == "zh" ? "Microsoft YaHei UI" : "Segoe UI";
     default-font-size: 13px;
 
     in property <string> stage: "checking";
-    in property <string> message: "正在连接并检查运行环境…";
+    // Technical error details, separate from localized status and guidance.
+    in property <string> message: "";
     in property <string> runtime-label: "Electron";
     in property <string> transfer-label: "";
     in property <float> progress: 0.0;
@@ -79,7 +82,7 @@ export component ShellWindow inherits Window {
             Rectangle {
                 width: 85px; height: 26px; border-radius: 13px;
                 background: #ffffff90; border-width: 1px; border-color: #ffffff;
-                Text { text: "应用启动器"; color: #61708c; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                Text { text: I18n.labels.launcher; color: #61708c; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
             }
         }
         Rectangle {
@@ -96,11 +99,11 @@ export component ShellWindow inherits Window {
                 alignment: center;
                 spacing: 10px;
                 Text {
-                    text: root.failed ? "启动未完成" : root.done ? "正在启动" : "准备启动";
+                    text: root.failed ? I18n.labels.heading-failed : root.done ? I18n.labels.heading-done : I18n.labels.heading-prepare;
                     color: #202c46; font-size: 28px; font-weight: 700;
                 }
                 Text {
-                    text: root.failed ? "请重试或查看错误详情。" : root.done ? "即将打开应用。" : "准备完成后自动打开应用。";
+                    text: root.failed ? I18n.labels.subtitle-failed : root.done ? I18n.labels.subtitle-done : I18n.labels.subtitle-prepare;
                     color: #5e6d87; font-size: 13px; wrap: word-wrap;
                 }
             }
@@ -120,29 +123,29 @@ export component ShellWindow inherits Window {
                         background: root.failed ? #c56c32 : root.done ? #26765b : #5279df;
                     }
                     Text {
-                        text: root.failed ? "暂时无法完成准备" : root.verifying ? "正在校验并安装" : root.done ? "运行环境已就绪" : root.stage == "checking" ? "正在准备运行环境" : "正在下载运行环境";
+                        text: root.failed ? I18n.labels.status-failed : root.verifying ? I18n.labels.status-verifying : root.done ? I18n.labels.status-done : root.stage == "checking" ? I18n.labels.status-checking : I18n.labels.status-downloading;
                         color: #28354e; font-size: 14px; font-weight: 600;
                     }
                     Rectangle { horizontal-stretch: 1; }
                     Text {
-                        text: root.failed ? "需要重试" : root.verifying ? "校验中" : root.indeterminate ? "请稍候" : round(clamp(root.progress, 0, 1) * 100) + "%";
+                        text: root.failed ? I18n.labels.badge-retry : root.verifying ? I18n.labels.badge-verifying : root.indeterminate ? I18n.labels.badge-wait : round(clamp(root.progress, 0, 1) * 100) + "%";
                         color: root.failed ? #a75426 : #4669be;
                         font-size: 12px; font-weight: 600;
                     }
                 }
                 Text {
-                    text: root.failed ? "可以重试；若问题持续，请展开错误详情查看原因。" : root.done ? "正在打开应用，马上就好。" : root.verifying ? "下载完成，正在检查文件完整性并安装运行环境…" : root.message;
+                    text: root.failed ? I18n.labels.hint-failed : root.done ? I18n.labels.hint-done : root.verifying ? I18n.labels.hint-verifying : root.stage == "checking" ? I18n.labels.hint-checking : I18n.labels.hint-downloading;
                     color: #6c778b; font-size: 12px; overflow: elide;
                 }
                 ProgressIndicator {
                     visible: !root.failed; height: 5px;
                     progress: clamp(root.progress, 0, 1); indeterminate: root.indeterminate;
-                    accessible-label: root.verifying ? "正在校验并安装运行环境" : "运行环境下载进度";
+                    accessible-label: root.verifying ? I18n.labels.accessible-verifying : I18n.labels.accessible-progress;
                 }
                 if root.failed: HorizontalLayout {
                     spacing: 10px;
-                    Button { text: "重试"; primary: true; clicked => { root.details-expanded = false; root.retry(); } }
-                    Button { text: root.details-expanded ? "收起详情" : "错误详情"; clicked => { root.details-expanded = !root.details-expanded; } }
+                    Button { text: I18n.labels.retry; primary: true; clicked => { root.details-expanded = false; root.retry(); } }
+                    Button { text: root.details-expanded ? I18n.labels.hide-details : I18n.labels.error-details; clicked => { root.details-expanded = !root.details-expanded; } }
                     Rectangle { horizontal-stretch: 1; }
                 }
                 if !root.failed: HorizontalLayout {
@@ -160,20 +163,20 @@ export component ShellWindow inherits Window {
                 read-only: true;
                 wrap: word-wrap;
                 font-size: 11px;
-                accessible-label: "错误详情，可选择并复制";
+                accessible-label: I18n.labels.accessible-details;
             }
             if !root.failed || !root.details-expanded: VerticalLayout {
                 spacing: 14px;
                 HorizontalLayout {
                     spacing: 12px;
-                    Step { number: "1"; label: "获取环境"; active: !root.download-complete; complete: root.download-complete; failed: root.failed; }
+                    Step { number: "1"; label: I18n.labels.step-download; active: !root.download-complete; complete: root.download-complete; failed: root.failed; }
                     Rectangle { height: 28px; Rectangle { x: 0; y: 12px; width: parent.width; height: 1px; background: #dde3ef; } }
-                    Step { number: "2"; label: "校验安装"; active: root.verifying || (root.failed && root.download-complete); complete: root.done; failed: root.failed; }
+                    Step { number: "2"; label: I18n.labels.step-verify; active: root.verifying || (root.failed && root.download-complete); complete: root.done; failed: root.failed; }
                     Rectangle { height: 28px; Rectangle { x: 0; y: 12px; width: parent.width; height: 1px; background: #dde3ef; } }
-                    Step { number: "3"; label: "启动应用"; active: root.done; }
+                    Step { number: "3"; label: I18n.labels.step-launch; active: root.done; }
                 }
                 if root.failed: Text {
-                    text: "重试时将尝试继续下载。";
+                    text: I18n.labels.resume-hint;
                     color: #61708c; font-size: 11px; horizontal-alignment: center;
                 }
             }

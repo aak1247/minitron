@@ -17,8 +17,15 @@ pub fn prepare_cli_console() {
 pub fn show_unredirected_error(message: &str) {
     #[cfg(all(windows, not(debug_assertions)))]
     if !windows::has_stderr() && !std::env::args_os().any(|arg| arg == "--headless") {
-        let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
-        let title: Vec<u16> = "Electron Runtime Shell"
+        let language = crate::i18n::detect();
+        let message: Vec<u16> = format!(
+            "{}\n\n{message}",
+            language.text("Unable to start the application.", "无法启动应用。")
+        )
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+        let title: Vec<u16> = format!("minitron · {}", language.text("Startup error", "启动错误"))
             .encode_utf16()
             .chain(Some(0))
             .collect();

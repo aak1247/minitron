@@ -2,41 +2,43 @@
 
 **Smaller Electron packages, shared runtime.**
 
+**English** | [简体中文](README.zh-CN.md)
+
 [![Windows CI](https://github.com/aak1247/minitron/actions/workflows/windows.yml/badge.svg)](https://github.com/aak1247/minitron/actions/workflows/windows.yml)
 
-面向 Electron 的轻量打包器：将业务应用与 Electron 运行时分开发行，让多个应用共享运行时，减少安装包和更新包体积。
+Package your Electron app separately from its runtime. A small Rust launcher installs the exact Electron version on demand, and multiple apps share that runtime instead of bundling it repeatedly.
 
-GitHub Windows x64 示例实测：应用目录 **9.63 MiB**，NSIS 安装包 **5.21 MiB**，均不含 Electron；首次使用需另行下载运行时。完整口径与平台边界见[验证报告](docs/验证报告.md)。
+The verified Windows x64 example has a **9.63 MiB application directory** and a **5.21 MiB NSIS installer**, excluding Electron. First use still downloads the runtime. These measurements describe the previously verified build; see the [validation report](docs/验证报告.md) for the build commit and measurement details.
 
-- **纯应用打包**：ASAR、生产依赖、原生模块 ABI 重建与 unpack。
-- **共享运行时**：精确版本隔离、断点续传、完整性校验、并发下载协调与安全回收。
-- **可恢复更新**：后台准备，下次启动切换；应用资源和运行时整体回滚。
-- **发布工具**：清单签名、运行时历史目录、启动器自更新和用户级 Windows 安装包。
+- **App-only packages:** ASAR, production dependencies, native module rebuilds and unpacked libraries.
+- **Shared runtimes:** exact versions, resumable downloads, SHA256 verification, coordinated installation and safe cleanup.
+- **Recoverable updates:** stage in the background, activate on the next launch, and roll back app resources and runtime bindings together.
+- **Release tooling:** signed manifests, retained runtime versions, launcher self-updates and per-user Windows installers.
+- **English and Chinese:** automatically follow the operating system's preferred display language, with English as the fallback.
 
-当前完成实际发行验收的平台为 **Windows x64**。macOS/Linux 尚未完成对应系统的发行与端到端验证。
+**Windows x64 is the validated release platform.** macOS and Linux still require release and end-to-end validation on their respective systems.
 
-## 工作方式
-
-应用发行目录仅包含 Rust 启动器、配置和业务资源；同一用户的多个应用复用精确版本的官方 Electron。首次安装仍需下载运行时，后续安装和业务更新不再重复分发。
+## How it works
 
 ```text
-应用目录                         当前用户共享缓存
-shell.exe                        SharedElectron/versions/win32-x64/v32.2.0/
-shell.toml                         electron.exe + 完整 Chromium/Node
+Application directory             Shared per-user cache
+shell.exe                         SharedElectron/versions/win32-x64/v32.2.0/
+shell.toml                          electron.exe + Chromium + Node.js
 resources/app.asar
-resources/app.asar.unpacked/      refs.json + locks/ + leases/
-updates/releases/                按平台、架构和版本隔离
+resources/app.asar.unpacked/       refs.json + locks/ + leases/
+updates/releases/                 isolated by platform, architecture and version
 ```
 
-壳执行 `electron.exe <app.asar绝对路径>`。此入口的 `process.defaultApp` 为 true；`process.resourcesPath` 指向共享运行时，应用资源应从 `app.getAppPath()` / `__dirname` 查找。标准 Electron API、preload 和 IPC 保持可用。
+The launcher runs `electron.exe <absolute-path-to-app.asar>`. This entry point has `process.defaultApp === true`. Because `process.resourcesPath` points to the shared runtime, resolve app resources through `app.getAppPath()` or `__dirname`. Standard Electron APIs, preload scripts and IPC remain available.
 
-## 构建 Windows 应用
+## Build a Windows application
 
-需要 Node.js >=22.12、Rust >=1.92、MSVC/Windows SDK；生成安装包还需 NSIS。原生模块重建需要 Python 和 C++ 构建工具。应用依赖和 Rust 依赖均有锁文件。
+Requirements: **Node.js >=22.12**, **Rust >=1.92**, MSVC and the Windows SDK. Installer builds also require NSIS. Native module rebuilds require Python and C++ build tools. Both npm and Cargo dependencies have lockfiles.
 
 ```powershell
 git clone https://github.com/aak1247/minitron.git
 cd minitron
+
 cd app
 npm ci
 npm test
@@ -46,90 +48,122 @@ cd ..
 ./scripts/build-windows.ps1 -RuntimeVersion 32.2.0 -ManifestUrl https://your-host.example/myapp/manifest.json
 ```
 
-默认输出：
+Default outputs under `dist/windows/1.0.0/`:
 
-- `dist/windows/1.0.0/application/`：可独立分发的应用目录，不含 Electron。
-- `dist/windows/1.0.0/MyApp-Setup-1.0.0.exe`：用户级 NSIS 安装包。
-- `dist/windows/1.0.0/app-1.0.0-win32-x64-electron-32.2.0.zip`：纯应用更新包。
-- `dist/windows/1.0.0/build.json`：构建参数及产物路径。
+| Output | Contents |
+|---|---|
+| `application/` | Distributable app directory, excluding Electron |
+| `MyApp-Setup-1.0.0.exe` | Per-user NSIS installer |
+| `app-1.0.0-win32-x64-electron-32.2.0.zip` | App-only update archive |
+| `build.json` | Build settings and artifact paths |
 
-`-Makensis <path>` 可指定 NSIS；脚本也会查找 PATH 和 electron-builder 的本机 NSIS 缓存。`-CargoHome <dir>` 可隔离有问题的全局 Cargo 镜像配置，无需修改用户设置。`-Configuration Debug` 可用于开发构建，`-SkipInstaller` 只组装应用目录。
+Use `-Makensis <path>` to select NSIS, `-Configuration Debug` for development, or `-SkipInstaller` to assemble only the application directory. `-CargoHome <dir>` isolates Cargo configuration without changing global settings. The script also searches PATH and the local electron-builder NSIS cache.
 
-纯资源打包通过 `@electron/asar` 直接完成，不使用 `electron-builder --dir`。构建过程在临时 staging 中 `npm ci --omit=dev`，按精确 Electron 版本重建原生模块；默认 unpack `.node/.dll/.dylib/.so` 及 `ffi/`。其他需要真实路径的文件可在应用 package.json 的 `runtimePackaging.asarUnpack` 中追加 glob。
+The ASAR packager stages `npm ci --omit=dev`, rebuilds native modules for the exact Electron version, and unpacks `.node/.dll/.dylib/.so` files and `ffi/`. Add other files requiring real paths to `runtimePackaging.asarUnpack` in the app's package.json.
 
-可用 `--source <dir>` 打包其他应用，源目录需含 package.json、package-lock.json 和入口资源。构建器自动加入 package.main 所在顶层目录，支持 dist/main/index.js 等布局；额外文件/目录可在 `runtimePackaging.files` 数组中明确指定（相对路径，不是 glob）。构建会检查入口存在并拒绝越界、符号链接或与输出目录重叠的输入。native 构建仅支持当前主机平台/架构，避免误发 ABI 不匹配的产物。
+To package another app:
 
-## 发布更新源
+```powershell
+node app/scripts/pack-asar.js --source ../my-electron-app --runtime-version 32.2.0 --version 1.0.0 --out ./dist/resources
+```
 
-准备官方 Electron ZIP 和纯应用 ZIP，由发布工具计算真实 SHA256/大小并写出清单：
+The source needs package.json, package-lock.json and its entry files. The top-level directory containing `package.main` is included automatically, including layouts such as `dist/main/index.js`. Add extra relative files or directories through `runtimePackaging.files` (explicit paths, not globs). Unsafe paths, symlinks and source/output overlap are rejected. Native rebuilds target the current host platform and architecture.
+
+## Publish an update source
+
+Provide an official Electron ZIP and the app-only ZIP. The publishing tool calculates real hashes and sizes:
 
 ```powershell
 node scripts/publish-release.mjs --app-id com.example.myapp --version 1.0.0 --runtime-version 32.2.0 --platform win32-x64 --app-zip ./dist/windows/1.0.0/app-1.0.0-win32-x64-electron-32.2.0.zip --runtime-zip C:/downloads/electron-v32.2.0-win32-x64.zip --base-url https://your-host.example/myapp --out ./dist/publish
 ```
 
-将 `dist/publish` 上传到对应地址。清单支持 `runtimes` 历史目录；后续发布传 `--previous-manifest <旧manifest.json>` 保留旧应用所需的运行时入口。旧 runtime artifact 文件也应继续保留在更新源中。
+Upload the generated directory to that base URL. On subsequent releases, pass `--previous-manifest <manifest.json>` to retain historical runtime entries. Keep their runtime archives available as well.
 
-本机演示可把 base-url 和 ManifestUrl 设为 `http://127.0.0.1:8787` 及其 manifest.json 路径，构建传 `-AllowLocalhostHttp`。运行 `node scripts/serve-release.mjs --dir ./dist/demo-source --port 8787` 提供本地更新源，再启动应用目录内的 shell.exe。
+For a local demo, publish with `--base-url http://127.0.0.1:8787 --out ./dist/demo-source`, build with the matching `-ManifestUrl http://127.0.0.1:8787/manifest.json -AllowLocalhostHttp`, then serve the generated source:
 
-生产清单可配置 Ed25519：
+```powershell
+node scripts/serve-release.mjs --dir ./dist/demo-source --port 8787
+```
+
+The repository does not include generated demo artifacts. `manifest/manifest.json` is a template containing deliberately invalid URLs and hash placeholders.
+
+### Sign manifests
 
 ```powershell
 node -e "const c=require('node:crypto'),f=require('node:fs');const k=c.generateKeyPairSync('ed25519');f.writeFileSync('release-private.pem',k.privateKey.export({format:'pem',type:'pkcs8'}));"
-# 在上面的发布命令追加 --signing-key ./release-private.pem
-# 构建应用时传 -ManifestPublicKey <dist/publish/public-key.txt中的base64值>
+# Add --signing-key ./release-private.pem to the publish command.
+# Build with -ManifestPublicKey <base64 value from dist/publish/public-key.txt>.
 ```
 
-配置公钥后，缺失签名、错误公钥、清单篡改均会拒绝；不配置公钥仅提供 HTTPS 和 artifact SHA256 完整性校验。私钥不进入应用包或版本控制。签名字节规则见 `docs/架构设计.md`。
+When a public key is configured, missing signatures, incorrect keys and modified manifests are rejected. Without one, verification uses HTTPS and artifact SHA256 hashes. Keep private keys out of app packages and version control. See the [architecture document](docs/架构设计.md) for signing rules.
 
-`manifest/manifest.json` 是模板，含有故意无效的 URL/哈希占位，不能直接作为生产源；发布工具会生成真实值。示例 Electron 32.2.0 用于复现，正式发布应选择维护中的版本并重新验证原生模块。
+Electron 32.2.0 is a reproducible test fixture. Choose a maintained Electron version for production and revalidate native modules. Configure your own CDN, code signing and any required macOS notarization.
 
-## 启动与更新
+## Launch and update
 
 ```powershell
-./shell.exe                         # 本地就绪后立即启动，后台准备更新
-./shell.exe --headless              # 缺 runtime 时在控制台报告进度
-./shell.exe --no-update             # 允许补齐 runtime，但不后台检查应用更新
-./shell.exe --offline               # 完全不访问更新源
-./shell.exe --check-update          # 下载并准备候选版本，本次不激活应用资源
-./shell.exe --rollback              # 切回保留的上一完整版本
-./shell.exe --uninstall             # 注销当前安装引用，安全回收无人使用的 runtime
-./shell.exe -- --your-app-argument  # 将参数传给 Electron 应用
+./shell.exe                         # Launch a ready app; stage updates in the background
+./shell.exe --headless              # Report runtime preparation in the console
+./shell.exe --no-update             # Prepare a missing runtime without background app updates
+./shell.exe --offline               # Do not access the update source
+./shell.exe --check-update          # Prepare a candidate without activating app resources
+./shell.exe --rollback              # Restore the retained previous release
+./shell.exe --uninstall             # Unregister this installation and safely collect unused runtimes
+./shell.exe -- --your-app-argument  # Forward arguments to the Electron app
 ```
 
-共享根目录默认为当前用户本地数据目录下的 `SharedElectron`，Windows 为 `%LOCALAPPDATA%/SharedElectron`。`ELECTRON_RUNTIME_ROOT` 可显式覆盖。每个安装路径独立登记；卸载 A 不会删除 B 仍依赖或进程仍使用的 runtime。登记损坏会报错并保留文件。
+The shared root defaults to the user's local data directory, `%LOCALAPPDATA%/SharedElectron` on Windows. Override it with `ELECTRON_RUNTIME_ROOT`. Each installation path has its own reference; uninstalling one app preserves runtimes used by another installation or a live process. Corrupt registration data causes an error and preserves files.
 
-应用更新下载到不可变版本目录，完整准备后写 pending；下次启动再切换 active 指针。asar、unpacked、应用版本和 runtime 版本绑定整体回滚，运行中的 DLL 不会被热替换。同一应用版本视为不可变，更新需增加应用版本。
+Updates use immutable release directories and a pending pointer. The next launch activates the complete ASAR, unpacked resources, app version and runtime binding together. Loaded DLLs are not overwritten. App versions are immutable; increment the version for each release.
 
-应用可通过环境变量 `ERS_READY_FILE`、`ERS_RELEASE_TXID` 接入就绪协议：真实页面与 IPC 初始化成功后，原子写入 `{"txid":"对应ID","ready":true}`。示例已接入。未接入时只用成功退出或启动宽限期作弱判据，不能代表业务健康。已就绪后的晚期崩溃不触发自动版本回滚。
+Apps can opt into readiness reporting through `ERS_READY_FILE` and `ERS_RELEASE_TXID`: after the real page and IPC are ready, atomically write `{"txid":"matching ID","ready":true}`. The example implements this protocol. Unmodified apps use successful exit or a startup grace period as a weak signal, not a business-health guarantee. Crashes after readiness do not trigger automatic rollback.
 
-壳更新通过清单 `shell.version/platforms` 和 `app.min_stub_version` 配合发布。发布工具追加 `--shell <新壳exe> --shell-version <版本> --min-shell-version <最低版本>`。临时 copier 等待原父进程退出后替换目标，结果与日志写在应用的 updates 目录。
+Launcher updates use `shell.version/platforms` and `app.min_stub_version` in the manifest. Publish with `--shell <new-exe> --shell-version <version> --min-shell-version <minimum>`. A temporary copier waits for the original parent to exit, replaces the launcher, and writes results and logs under the app's updates directory.
 
-## 测试
+## Language
+
+The launcher supports **English** and **Simplified Chinese**. It reads the user's preferred OS display language: `zh-*` selects Chinese; English, unsupported languages and detection failures use English. On Windows, this follows display-language preferences rather than regional date/number formatting.
+
+The window title, status messages, controls, accessibility labels, help text and startup error dialog follow the selected language. Technical error details and machine-readable diagnostic markers retain their original text.
+
+Override detection for testing or a specific installation:
+
+```powershell
+$env:MINITRON_LANG = 'en'  # English
+$env:MINITRON_LANG = 'zh'  # Chinese
+$env:MINITRON_LANG = 'auto' # Follow the operating system (also the default when unset)
+```
+
+The launcher preview uses the same translations. In `shell/`, run `cargo run --locked --example launcher-preview -- downloading`. Available preview states: `checking`, `downloading`, `verifying`, `error`, `done`. Append a PPM output path to capture the actual Slint window.
+
+## Tests
 
 ```powershell
 node --test scripts/publish-release.test.mjs
-cd app; npm test; cd ..
-cd shell; cargo test --locked; cargo check --locked; cd ..
+cd app
+npm test
+cd ../shell
+cargo test --locked
+cargo check --locked
+cd ..
 ./scripts/e2e-windows.ps1 -RuntimeZip C:/downloads/electron-v32.2.0-win32-x64.zip -UpgradeRuntimeZip C:/downloads/electron-v33.3.1-win32-x64.zip
 ```
 
-E2E 使用临时目录、loopback HTTP 源和临时签名密钥，覆盖下载 UI、真实页面/preload/IPC、native addon、首次下载、离线启动、共享卸载、后台 staging、激活、回滚、跨 runtime 更新、并发、孤儿进程 lease、损坏登记与真实壳自更新。`dist/e2e-report.json` 保存结果及 fixture 路径。
+E2E uses temporary directories, a loopback update source and temporary signing keys. It covers the actual download UI, Electron page/preload/IPC, native addons, offline launch, shared uninstall, staging, activation, rollback, runtime upgrades, concurrency, orphan-process leases, corrupt registration data and genuine launcher self-updates. Results are saved to `dist/e2e-report.json`.
 
-smoke 模式使用软件渲染，并在 Electron ready 前启动超时监控，适配 CI 的虚拟显卡环境；测试仍实际加载页面、preload 和 IPC。
+Smoke mode uses software rendering and starts its watchdog before Electron readiness. The suite defaults to a release launcher and builds a debug 0.1.1 self-update fixture. Use `-ShellBinary` and `-NewShellBinary` for existing binaries. Tests use an isolated cache.
 
-E2E 默认使用 release 壳，并编译 0.1.1 的 debug 壳作为自更新 fixture；`-ShellBinary`、`-NewShellBinary` 可指定已有测试二进制。测试不接触默认共享缓存。生产 CDN、代码签名和 macOS 公证需在发布环境自行配置。
+GitHub Actions runs Node/Rust tests, release builds and NSIS compilation on pushes and pull requests. To run the complete E2E suite, manually start **Windows CI** with `run_e2e` enabled.
 
-GitHub Actions 每次 push/PR 运行 Node/Rust 测试、release 构建与 NSIS 编译，并保存构建产物。在 Actions 手动运行 Windows CI 并勾选 `run_e2e`，还会下载校验官方测试运行时并执行完整 E2E。
+## Repository layout
 
-## 项目结构
-
-| 路径 | 用途 |
+| Path | Purpose |
 |---|---|
-| `app/` | 标准 Electron 示例应用、ASAR 打包器与测试 |
-| `shell/` | Rust/Slint 启动器、运行时管理和更新逻辑 |
-| `scripts/` | Windows 构建、发布清单、本地服务和 E2E |
-| `installer/` | 用户级 NSIS 安装脚本 |
-| `manifest/` | 更新清单模板 |
-| `docs/` | [架构设计](docs/架构设计.md)与[验证报告](docs/验证报告.md) |
+| `app/` | Standard Electron example, ASAR packager and tests |
+| `shell/` | Rust/Slint launcher, runtime management and updates |
+| `scripts/` | Windows builds, manifest publishing, local server and E2E |
+| `installer/` | Per-user NSIS installer |
+| `manifest/` | Update manifest template |
+| `docs/` | [Architecture](docs/架构设计.md) and [validation report](docs/验证报告.md) (Chinese) |
 
-仓库只保存源码；依赖缓存、构建产物和本机演示源由构建/发布命令生成。参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Only source is committed. Build commands generate dependency caches, application artifacts and local demo sources. See the [contributing guide](CONTRIBUTING.md) (Chinese) for development instructions.
