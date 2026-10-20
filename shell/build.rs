@@ -10,9 +10,17 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("assets/icon.ico").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("assets").display()
+    );
 
     // 编译期把 Slint UI 编进二进制
-    slint_build::compile(manifest_dir.join("ui/shell.slint")).expect("slint compile failed");
+    slint_build::compile_with_config(
+        manifest_dir.join("ui/shell.slint"),
+        slint_build::CompilerConfiguration::new().with_style("fluent-light".into()),
+    )
+    .expect("slint compile failed");
 
     // Windows: 嵌入 exe 图标和版本信息
     #[cfg(windows)]

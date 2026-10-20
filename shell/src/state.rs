@@ -20,8 +20,10 @@ fn begin(
         return;
     }
     if let Some(w) = window.upgrade() {
-        w.set_stage("downloading".into());
-        w.set_message("正在准备共享 Electron 运行时…".into());
+        w.set_stage("checking".into());
+        w.set_message("正在连接并检查运行环境…".into());
+        w.set_progress(0.0);
+        w.set_transfer_label("".into());
         w.set_indeterminate(true);
     }
     std::thread::spawn(move || {
@@ -30,20 +32,30 @@ fn begin(
             let weak = progress_window.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(w) = weak.upgrade() {
-                    w.set_indeterminate(total == 0);
+                    let verifying = total > 0 && got >= total;
+                    w.set_stage(
+                        if verifying {
+                            "verifying"
+                        } else {
+                            "downloading"
+                        }
+                        .into(),
+                    );
+                    w.set_indeterminate(total == 0 || verifying);
                     w.set_progress(if total == 0 {
                         0.0
                     } else {
                         got as f32 / total as f32
                     });
-                    w.set_message(
+                    w.set_transfer_label(
                         format!(
-                            "下载运行时：{:.1} / {:.1} MiB",
+                            "{:.1} / {:.1} MiB",
                             got as f64 / 1_048_576.0,
                             total as f64 / 1_048_576.0
                         )
                         .into(),
                     );
+                    w.set_message("正在下载所需运行环境，请保持网络连接。".into());
                 }
             });
         });
@@ -71,6 +83,7 @@ fn begin(
 
 pub fn install_runtime(key: &RuntimeKey, artifact: &Artifact) -> Result<runtime::Runtime> {
     let window = ShellWindow::new()?;
+    window.set_runtime_label(format!("Electron {} · {}", key.version, key.platform).into());
     let busy = Arc::new(AtomicBool::new(false));
     let outcome: Outcome = Arc::new(Mutex::new(None));
     let weak = window.as_weak();

@@ -1,45 +1,189 @@
-// 慢速路径 UI：只在「首次下载运行时 / 热更新 / 修复 / 出错」时出现。
-// 正常启动不创建窗口，壳 <100ms 内完成 spawn 并退出。
+// Only the preparation path creates a window; a ready runtime launches directly.
+import { Button, ProgressIndicator, TextEdit } from "std-widgets.slint";
 
-import { Button, ProgressIndicator } from "std-widgets.slint";
+component Step inherits Rectangle {
+    in property <string> number;
+    in property <string> label;
+    in property <bool> active;
+    in property <bool> complete;
+    in property <bool> failed;
+    private property <bool> attention: active && failed;
+    height: 28px;
+    HorizontalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 24px; height: 24px; border-radius: 12px;
+            background: root.attention ? #fff0e4 : root.active ? #e5edff : root.complete ? #e5f2ed : #eef0f5;
+            Text {
+                visible: !root.complete;
+                text: root.attention ? "!" : root.number;
+                color: root.attention ? #a75426 : root.active ? #315dcc : root.complete ? #26765b : #61708c;
+                font-size: 11px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            Image {
+                visible: root.complete;
+                x: 6px; y: 6px; width: 12px; height: 12px;
+                source: @image-url("../assets/check.svg");
+                accessible-role: none;
+            }
+        }
+        Text {
+            text: root.label;
+            color: root.attention ? #a75426 : root.active ? #20375e : root.complete ? #475c58 : #61708c;
+            font-size: 12px; font-weight: root.active ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+}
 
 export component ShellWindow inherits Window {
-    title: "MyApp 启动器";
+    title: "minitron · 应用启动器";
     icon: @image-url("../assets/icon.png");
-    preferred-width: 420px;
-    preferred-height: 220px;
-    no-frame: false;
+    preferred-width: 660px; preferred-height: 560px;
+    min-width: 620px; min-height: 560px;
+    background: #f4f6fc;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 13px;
 
-    // 对外状态（由 Rust 侧驱动）
-    in property <string> stage: "checking";      // checking | downloading | updating | error | done
-    in property <string> message: "正在检查运行环境…";
-    in property <float> progress: 0.0;           // 0.0 ~ 1.0
-    in property <bool> indeterminate: false;
+    in property <string> stage: "checking";
+    in property <string> message: "正在连接并检查运行环境…";
+    in property <string> runtime-label: "Electron";
+    in property <string> transfer-label: "";
+    in property <float> progress: 0.0;
+    in property <bool> indeterminate: true;
+    private property <bool> details-expanded: false;
+    private property <bool> failed: stage == "error";
+    private property <bool> verifying: stage == "verifying";
+    private property <bool> done: stage == "done";
+    private property <bool> download-complete: verifying || done || (failed && progress >= 1);
     callback retry();
 
+    // Painted Mica-inspired material, compatible with the software renderer.
+    Rectangle {
+        x: 0; y: 0; width: parent.width; height: parent.height;
+        background: @linear-gradient(115deg, #edf3ff 0%, #f5f4ff 60%, #eaeafb 100%);
+    }
     VerticalLayout {
-        padding: 24px;
+        padding: 32px; padding-top: 24px; padding-bottom: 20px;
         spacing: 16px;
-
-        Text {
-            text: "MyApp";
-            font-size: 20px;
-            font-weight: 700;
+        HorizontalLayout {
+            height: 30px; spacing: 10px;
+            Rectangle {
+                width: 30px; height: 30px; border-radius: 9px;
+                background: #5769e8;
+                Text { text: "m"; color: white; font-size: 23px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+            }
+            Text { text: "minitron"; color: #263654; font-size: 18px; font-weight: 700; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: 85px; height: 26px; border-radius: 13px;
+                background: #ffffff90; border-width: 1px; border-color: #ffffff;
+                Text { text: "应用启动器"; color: #61708c; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+            }
         }
-
-        Text {
-            text: root.message;
-            wrap: word-wrap;
+        Rectangle {
+            height: 148px;
+            Image {
+                source: @image-url("../assets/runtime-layers.svg");
+                width: 200px; height: 170px;
+                x: parent.width - self.width + 8px; y: -6px;
+                accessible-role: none;
+            }
+            VerticalLayout {
+                x: 0;
+                width: parent.width - 190px;
+                padding-top: 15px; padding-bottom: 10px; spacing: 12px;
+                Text { text: "轻盈启动 · 自在运行"; color: #526b9b; font-size: 11px; font-weight: 600; }
+                Text {
+                    text: root.failed ? "遇到一点小状况。" : root.done ? "一切就绪，即刻出发。" : "好体验，即将就绪。";
+                    color: #202c46; font-size: 28px; font-weight: 700;
+                }
+                Text {
+                    text: root.failed ? "准备过程已暂停，\n你可以查看详情后重新尝试。" : root.done ? "共享运行环境已准备完成，\n正在为你打开应用。" : "正在为应用准备共享运行环境，\n准备完成后将自动打开应用。";
+                    color: #5e6d87; font-size: 13px; wrap: word-wrap;
+                }
+            }
         }
-
-        ProgressIndicator {
-            progress: root.progress;
-            indeterminate: root.indeterminate;
+        Rectangle {
+            height: 152px; border-radius: 14px;
+            background: #ffffff; border-width: 1px; border-color: #e2e7f2;
+            drop-shadow-offset-y: 6px;
+            drop-shadow-blur: 20px;
+            drop-shadow-color: #4352830c;
+            VerticalLayout {
+                padding: 20px; spacing: 14px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 8px; height: 8px; y: 5px; border-radius: 4px;
+                        background: root.failed ? #c56c32 : root.done ? #26765b : #5279df;
+                    }
+                    Text {
+                        text: root.failed ? "暂时无法完成准备" : root.verifying ? "正在校验并安装" : root.done ? "运行环境已就绪" : root.stage == "checking" ? "正在准备运行环境" : "正在下载运行环境";
+                        color: #28354e; font-size: 14px; font-weight: 600;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        text: root.failed ? "需要重试" : root.verifying ? "校验中" : root.indeterminate ? "请稍候" : round(clamp(root.progress, 0, 1) * 100) + "%";
+                        color: root.failed ? #a75426 : #4669be;
+                        font-size: 12px; font-weight: 600;
+                    }
+                }
+                Text {
+                    text: root.failed ? "可以重试；若问题持续，请展开错误详情查看原因。" : root.done ? "正在打开应用，马上就好。" : root.verifying ? "下载完成，正在检查文件完整性并安装运行环境…" : root.message;
+                    color: #6c778b; font-size: 12px; overflow: elide;
+                }
+                ProgressIndicator {
+                    visible: !root.failed; height: 5px;
+                    progress: clamp(root.progress, 0, 1); indeterminate: root.indeterminate;
+                    accessible-label: root.verifying ? "正在校验并安装运行环境" : "运行环境下载进度";
+                }
+                if root.failed: HorizontalLayout {
+                    spacing: 10px;
+                    Button { text: "重试"; primary: true; clicked => { root.details-expanded = false; root.retry(); } }
+                    Button { text: root.details-expanded ? "收起详情" : "错误详情"; clicked => { root.details-expanded = !root.details-expanded; } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if !root.failed: HorizontalLayout {
+                    Text { text: root.runtime-label; color: #61708c; font-size: 11px; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.transfer-label; color: #61708c; font-size: 11px; }
+                }
+            }
         }
-
-        if root.stage == "error": Button {
-            text: "重试";
-            clicked => { root.retry(); }
+        Rectangle {
+            vertical-stretch: 1; min-height: 76px;
+            if root.failed && root.details-expanded: TextEdit {
+                x: 0; y: 0; width: parent.width; height: parent.height;
+                text: root.message;
+                read-only: true;
+                wrap: word-wrap;
+                font-size: 11px;
+                accessible-label: "错误详情，可选择并复制";
+            }
+            if !root.failed || !root.details-expanded: VerticalLayout {
+                spacing: 14px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Step { number: "1"; label: "获取环境"; active: !root.download-complete; complete: root.download-complete; failed: root.failed; }
+                    Rectangle { height: 28px; Rectangle { x: 0; y: 12px; width: parent.width; height: 1px; background: #dde3ef; } }
+                    Step { number: "2"; label: "校验安装"; active: root.verifying || (root.failed && root.download-complete); complete: root.done; failed: root.failed; }
+                    Rectangle { height: 28px; Rectangle { x: 0; y: 12px; width: parent.width; height: 1px; background: #dde3ef; } }
+                    Step { number: "3"; label: "启动应用"; active: root.done; }
+                }
+                Text {
+                    text: root.failed ? "支持断点续传，重试时会尝试复用有效的下载内容。" : "一次准备，多应用共享。让每一次启动，都更轻盈。";
+                    color: #61708c; font-size: 11px; horizontal-alignment: center;
+                }
+            }
+        }
+        Rectangle { height: 1px; background: #e1e6f0; }
+        HorizontalLayout {
+            height: 16px;
+            Text { text: "共享运行时，更小的应用。"; color: #61708c; font-size: 10px; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "POWERED BY MINITRON"; color: #61708c; font-size: 9px; font-weight: 600; }
         }
     }
 }
