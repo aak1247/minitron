@@ -6,7 +6,7 @@
 
 面向 Electron 的轻量打包器：将业务应用与 Electron 运行时分开发行，让多个应用共享运行时，减少安装包和更新包体积。
 
-Windows x64 示例实测：应用目录 **8.84 MiB**，NSIS 安装包 **4.86 MiB**，均不含 Electron；首次使用需另行下载运行时。完整口径与平台边界见[验证报告](docs/验证报告.md)。
+GitHub Windows x64 示例实测：应用目录 **9.63 MiB**，NSIS 安装包 **5.21 MiB**，均不含 Electron；首次使用需另行下载运行时。完整口径与平台边界见[验证报告](docs/验证报告.md)。
 
 - **纯应用打包**：ASAR、生产依赖、原生模块 ABI 重建与 unpack。
 - **共享运行时**：精确版本隔离、断点续传、完整性校验、并发下载协调与安全回收。
@@ -114,6 +114,8 @@ cd shell; cargo test --locked; cargo check --locked; cd ..
 ```
 
 E2E 使用临时目录、loopback HTTP 源和临时签名密钥，覆盖下载 UI、真实页面/preload/IPC、native addon、首次下载、离线启动、共享卸载、后台 staging、激活、回滚、跨 runtime 更新、并发、孤儿进程 lease、损坏登记与真实壳自更新。`dist/e2e-report.json` 保存结果及 fixture 路径。
+
+smoke 模式使用软件渲染，并在 Electron ready 前启动超时监控，适配 CI 的虚拟显卡环境；测试仍实际加载页面、preload 和 IPC。
 
 E2E 默认使用 release 壳，并编译 0.1.1 的 debug 壳作为自更新 fixture；`-ShellBinary`、`-NewShellBinary` 可指定已有测试二进制。测试不接触默认共享缓存。生产 CDN、代码签名和 macOS 公证需在发布环境自行配置。
 
