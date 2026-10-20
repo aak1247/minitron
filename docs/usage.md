@@ -59,6 +59,8 @@ Host the contents of `dist/publish` at the base URL, with `manifest.json` availa
 
 For later releases, increase the app version and add `--previous-manifest <previous-manifest.json>`. This preserves runtime entries needed by older installations; keep the corresponding archives available.
 
+Use a separate publishing directory and manifest URL for each system and architecture. For Linux x64, use `--platform linux-x64`; for Mac, use `darwin-x64` or `darwin-arm64`, with the matching app ZIP and official Electron ZIP.
+
 To distribute a launcher update, add `--shell <minitron-binary> --shell-version <version>`. Use `--min-shell-version <version>` when an app release needs a particular launcher version.
 
 ### Signed updates

@@ -59,6 +59,8 @@ node scripts/publish-release.mjs --app-id com.example.myapp --version 1.0.0 --ru
 
 后续发布增加应用版本，并传入 `--previous-manifest <previous-manifest.json>`，保留旧安装所需的运行时条目及对应 ZIP 文件。
 
+为每个系统和架构使用独立的发布目录与更新清单地址。Linux x64 使用 `--platform linux-x64`，Mac 使用 `darwin-x64` 或 `darwin-arm64`，并选择对应平台的应用 ZIP 与官方 Electron ZIP。
+
 发布启动器更新时，追加 `--shell <minitron-binary> --shell-version <version>`。应用需要特定启动器版本时，可通过 `--min-shell-version <version>` 设置最低版本。
 
 ### 签名更新
