@@ -1,0 +1,35 @@
+{
+  "app_id": "com.example.myapp",
+  "channel": "stable",
+  "runtime": {
+    "version": "32.2.0",
+    "platforms": {
+      "win32-x64": {
+        "url": "https://cdn.example.com/runtime/electron-v32.2.0-win32-x64.zip",
+        "sha256": "<填写：SHASUMS256.txt 中对应值>",
+        "size": 0
+      },
+      "darwin-arm64": {
+        "url": "https://cdn.example.com/runtime/electron-v32.2.0-darwin-arm64.zip",
+        "sha256": "<填写>",
+        "size": 0
+      },
+      "linux-x64": {
+        "url": "https://cdn.example.com/runtime/electron-v32.2.0-linux-x64.zip",
+        "sha256": "<填写>",
+        "size": 0
+      }
+    }
+  },
+  "app": {
+    "version": "1.0.0",
+    "asar": {
+      "url": "https://cdn.example.com/myapp/app-1.0.0.asar.zip",
+      "sha256": "<填写>",
+      "size": 0
+    },
+    "min_stub_version": "0.1.0",
+    "release_notes": "首个版本"
+  },
+  "signature": null
+}

@@ -1,0 +1,183 @@
+//! shell.toml parsing and per-user runtime paths.
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShellConfig {
+    /// Application identifier, normally a reverse-DNS name.
+    pub app_id: String,
+    /// Exact Electron version for the initially installed release.
+    pub required_runtime: String,
+    /// Update manifest URL.
+    pub manifest_url: String,
+    /// Version of the initially installed application resources.
+    pub app_version: String,
+    /// Permit cleartext HTTP only for loopback development servers.
+    #[serde(default)]
+    pub allow_localhost_http: bool,
+    /// Optional base64-encoded Ed25519 public key used to verify manifests.
+    #[serde(default)]
+    pub manifest_public_key: Option<String>,
+}
+
+impl ShellConfig {
+    pub fn load() -> Result<Self> {
+        let exe_dir = std::env::current_exe()?
+            .parent()
+            .context("no exe dir")?
+            .to_path_buf();
+        Self::load_from(&exe_dir.join("shell.toml"))
+    }
+
+    /// Load configuration from an explicit path. The production loader uses
+    /// the shell executable's directory; this entry point also keeps parsing
+    /// independently testable.
+    pub fn load_from(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read shell config {}", path.display()))?;
+        let config: Self = toml::from_str(&text).context("parse shell.toml")?;
+        anyhow::ensure!(!config.app_id.trim().is_empty(), "app_id must not be empty");
+        anyhow::ensure!(
+            !config.required_runtime.trim().is_empty(),
+            "required_runtime must not be empty"
+        );
+        anyhow::ensure!(
+            !config.app_version.trim().is_empty(),
+            "app_version must not be empty"
+        );
+        Ok(config)
+    }
+
+    /// Application directory containing the shell executable and resources.
+    pub fn app_dir(&self) -> Result<PathBuf> {
+        Ok(std::env::current_exe()?
+            .parent()
+            .context("no exe dir")?
+            .to_path_buf())
+    }
+
+    pub fn resources_dir(&self) -> Result<PathBuf> {
+        Ok(self.app_dir()?.join("resources"))
+    }
+}
+
+/// Per-user shared runtime root. An override is useful for isolated tests and
+/// explicit deployments; the default never requires machine-wide privileges.
+pub fn runtime_root() -> PathBuf {
+    let user_data = dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir);
+    runtime_root_from_override(std::env::var_os("ELECTRON_RUNTIME_ROOT"), user_data)
+}
+
+fn runtime_root_from_override(override_path: Option<OsString>, user_data: PathBuf) -> PathBuf {
+    if let Some(root) = override_path {
+        if !root.is_empty() {
+            return PathBuf::from(root);
+        }
+    }
+    user_data.join("SharedElectron")
+}
+
+/// Manifest platform key for this build target.
+pub fn platform_triple() -> &'static str {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        "win32-x64"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        "win32-arm64"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86"))]
+    {
+        "win32-ia32"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "darwin-arm64"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "darwin-x64"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "linux-x64"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "linux-arm64"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "arm"))]
+    {
+        "linux-armv7l"
+    }
+    #[cfg(not(any(
+        all(
+            target_os = "windows",
+            any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "x86")
+        ),
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")
+        )
+    )))]
+    {
+        "unsupported-platform"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_config_defaults_new_security_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "electron-shell-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shell.toml");
+        std::fs::write(
+            &path,
+            "app_id='example.app'\nrequired_runtime='32.2.0'\nmanifest_url='https://example.invalid/manifest.json'\napp_version='1.0.0'\n",
+        )
+        .unwrap();
+
+        let cfg = ShellConfig::load_from(&path).unwrap();
+        assert!(!cfg.allow_localhost_http);
+        assert_eq!(cfg.manifest_public_key, None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn runtime_root_honors_override() {
+        let expected = std::env::temp_dir().join("runtime-root-config-test");
+        assert_eq!(
+            runtime_root_from_override(Some(expected.clone().into()), PathBuf::new()),
+            expected
+        );
+        assert_eq!(
+            runtime_root_from_override(None, PathBuf::from("user-data")),
+            PathBuf::from("user-data/SharedElectron")
+        );
+    }
+
+    #[test]
+    fn platform_triple_is_nonempty() {
+        assert!(!platform_triple().is_empty());
+    }
+}

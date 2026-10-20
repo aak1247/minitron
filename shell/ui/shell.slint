@@ -1,0 +1,45 @@
+// 慢速路径 UI：只在「首次下载运行时 / 热更新 / 修复 / 出错」时出现。
+// 正常启动不创建窗口，壳 <100ms 内完成 spawn 并退出。
+
+import { Button, ProgressIndicator } from "std-widgets.slint";
+
+export component ShellWindow inherits Window {
+    title: "MyApp 启动器";
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 420px;
+    preferred-height: 220px;
+    no-frame: false;
+
+    // 对外状态（由 Rust 侧驱动）
+    in property <string> stage: "checking";      // checking | downloading | updating | error | done
+    in property <string> message: "正在检查运行环境…";
+    in property <float> progress: 0.0;           // 0.0 ~ 1.0
+    in property <bool> indeterminate: false;
+    callback retry();
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+
+        Text {
+            text: "MyApp";
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        Text {
+            text: root.message;
+            wrap: word-wrap;
+        }
+
+        ProgressIndicator {
+            progress: root.progress;
+            indeterminate: root.indeterminate;
+        }
+
+        if root.stage == "error": Button {
+            text: "重试";
+            clicked => { root.retry(); }
+        }
+    }
+}

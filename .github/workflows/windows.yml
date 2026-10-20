@@ -1,0 +1,92 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: Run real Electron and native addon end-to-end tests
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt
+          rustup default 1.92.0
+      - name: Install app tooling
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+      - name: Test app packaging
+        working-directory: app
+        run: npm test
+      - name: Test publishing
+        run: node --test scripts/publish-release.test.mjs
+      - name: Check Rust formatting
+        working-directory: shell
+        run: cargo fmt --all -- --check
+      - name: Test launcher
+        working-directory: shell
+        run: cargo test --locked
+      - name: Install NSIS
+        run: |
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+      - name: Build release application and installer
+        run: |
+          ./scripts/build-windows.ps1 -RuntimeVersion 32.2.0 -ManifestUrl https://example.invalid/myapp/manifest.json -Makensis 'C:/Program Files (x86)/NSIS/makensis.exe'
+      - name: Download and verify E2E runtimes
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e }}
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'electron-zips'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          foreach ($version in @('32.2.0', '33.3.1')) {
+            $baseUrl = "https://github.com/electron/electron/releases/download/v$version"
+            $name = "electron-v$version-win32-x64.zip"
+            $archive = Join-Path $destination $name
+            Invoke-WebRequest "$baseUrl/$name" -OutFile $archive
+            $checksumFile = Join-Path $destination "SHASUMS256-$version.txt"
+            Invoke-WebRequest "$baseUrl/SHASUMS256.txt" -OutFile $checksumFile
+            $pattern = '\s+\*?' + [regex]::Escape($name) + '\s*$'
+            $line = Get-Content -LiteralPath $checksumFile | Where-Object { $_ -match $pattern } | Select-Object -First 1
+            if (-not $line) { throw "Missing official checksum: $name" }
+            $expected = ($line.Trim() -split '\s+')[0]
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw "Checksum mismatch: $name" }
+          }
+          "E2E_RUNTIME_DIR=$destination" >> $env:GITHUB_ENV
+      - name: Run complete Windows E2E
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e }}
+        run: |
+          ./scripts/e2e-windows.ps1 -RuntimeZip "$env:E2E_RUNTIME_DIR/electron-v32.2.0-win32-x64.zip" -UpgradeRuntimeZip "$env:E2E_RUNTIME_DIR/electron-v33.3.1-win32-x64.zip"
+      - name: Save build artifacts and test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: minitron-windows-x64
+          path: |
+            dist/windows/1.0.0/
+            dist/e2e-report.json
+          if-no-files-found: warn
+          retention-days: 7

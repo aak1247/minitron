@@ -1,0 +1,8 @@
+# 壳配置文件：与 shell(.exe) 同目录
+app_id = "com.example.myapp"
+required_runtime = "32.2.0"
+manifest_url = "https://cdn.example.com/myapp/manifest.json"
+app_version = "1.0.0"
+allow_localhost_http = false
+# Optional trusted Ed25519 public key, base64 raw 32 bytes:
+# manifest_public_key = "..."

@@ -1,0 +1,23 @@
+{
+  "name": "myapp",
+  "version": "1.0.0",
+  "description": "示例应用：标准 Electron 代码，由共享运行时启动",
+  "main": "main.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "pack:asar": "node scripts/pack-asar.js",
+    "test": "node --test"
+  },
+  "runtimePackaging": {
+    "asarUnpack": [
+      "ffi/**"
+    ]
+  },
+  "devDependencies": {
+    "@electron/asar": "3.4.1",
+    "@electron/rebuild": "4.2.1",
+    "yazl": "3.3.1"
+  }
+}

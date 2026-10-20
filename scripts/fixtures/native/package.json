@@ -1,0 +1,8 @@
+{
+  "name": "myapp-native-fixture",
+  "version": "1.0.0",
+  "description": "Real native addon E2E fixture",
+  "main": "main.js",
+  "dependencies": { "bufferutil": "4.0.9" },
+  "runtimePackaging": { "asarUnpack": ["ffi/**"] }
+}

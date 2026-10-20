@@ -1,0 +1,46 @@
+[package]
+name = "electron-shell"
+version = "0.1.0"
+edition = "2021"
+description = "Electron shared-runtime bootstrap & updater shell"
+
+[dependencies]
+slint = { version = "1.8", default-features = false, features = [
+    "compat-1-18",
+    "backend-winit",
+    "renderer-software",
+    "std",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sha2 = "0.10"
+ureq = { version = "2", features = ["tls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dirs = "5"
+anyhow = "1"
+semver = "1"
+fs2 = "0.4"
+base64 = "0.22"
+ed25519-dalek = "2"
+libc = "0.2"
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_Security"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+slint-build = "1.8"
+
+# Windows 下把图标嵌进 exe（桌面快捷方式/任务管理器看到的是壳的图标）
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+[profile.release]
+opt-level = "z"     # 壳要尽可能小
+lto = true
+strip = true
+panic = "abort"
