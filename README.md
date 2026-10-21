@@ -17,7 +17,7 @@ Available for **Windows x64, Linux x64, and macOS Intel / Apple Silicon**.
 
 ## Quick start
 
-Run these commands from your existing Electron project. Skip the build step if the app is already compiled.
+Requires Node.js 22.12 or newer. Run these commands from your existing Electron project on the target operating system. Skip the build step if the app is already compiled.
 
 ```sh
 npm install --save-dev minitron-builder
