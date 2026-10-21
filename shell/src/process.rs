@@ -375,6 +375,7 @@ fn wait_for_identity_change(pid: u32, expected: u64, deadline: Instant) -> Resul
         match start_time(pid) {
             Ok(actual) if actual == expected => {}
             Ok(_) => return Ok(true),
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(true),
             Err(_error) if !is_alive(pid) => return Ok(true),
             Err(error) => {
                 return Err(error).context("inspect macOS process while waiting for exit")
