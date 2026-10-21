@@ -2,15 +2,7 @@
 
 This example packages the existing `karvis-electron` app without changing its source. The app keeps its Karvis name, icon and assets; Minitron supplies the small launcher and downloads Electron on first launch.
 
-From the `karvis-electron` project directory, install the CLI and build the app:
-
-```sh
-npm install -D minitron-builder
-npm run build
-npx minitron-builder
-```
-
-If the app is already compiled, skip `npm run build`. Keep the existing app identity and icons in electron-builder settings, with ASAR enabled. For this Karvis layout, ensure the packaged entry and assets are set in the existing `build` configuration:
+Keep the existing app identity and icons in electron-builder settings, with ASAR enabled. For this Karvis layout, set the packaged entry and assets in the existing `build` configuration:
 
 ```json
 {
@@ -23,6 +15,16 @@ If the app is already compiled, skip `npm run build`. Keep the existing app iden
 ```
 
 Merge these keys into the existing `build` object and preserve its other packaging settings. `extraResources` installs `assets/` beside `app.asar`. The optional [`electron-builder.config.cjs`](electron-builder.config.cjs) shows the equivalent lower-level adapter configuration.
+
+From the `karvis-electron` project directory, install the CLI and build the app:
+
+```sh
+npm install -D minitron-builder
+npm run build
+npx minitron-builder
+```
+
+Skip `npm run build` if the app is already compiled.
 
 By default, the CLI builds for the current platform. Select installer formats as needed:
 

@@ -2,15 +2,7 @@
 
 此示例打包现有 `karvis-electron` 应用，不修改其源代码。应用保留 Karvis 名称、图标和资源；Minitron 提供轻量启动器，并在首次启动时下载 Electron。
 
-在 `karvis-electron` 项目目录安装 CLI 并构建应用：
-
-```sh
-npm install -D minitron-builder
-npm run build
-npx minitron-builder
-```
-
-应用已编译时可跳过 `npm run build`。在 electron-builder 配置中保留现有应用标识和图标，并启用 ASAR。Karvis 的资源布局还需在现有 `build` 配置中设置应用入口和资源：
+在 electron-builder 配置中保留现有应用标识和图标，并启用 ASAR。Karvis 的资源布局还需在现有 `build` 配置中设置应用入口和资源：
 
 ```json
 {
@@ -23,6 +15,16 @@ npx minitron-builder
 ```
 
 将这些字段合并到现有 `build` 对象，并保留其他打包设置。`extraResources` 会把 `assets/` 安装到 `app.asar` 旁边。可选的 [`electron-builder.config.cjs`](electron-builder.config.cjs) 展示等价的底层适配器配置。
+
+在 `karvis-electron` 项目目录安装 CLI 并构建应用：
+
+```sh
+npm install -D minitron-builder
+npm run build
+npx minitron-builder
+```
+
+应用已编译时可跳过 `npm run build`。
 
 CLI 默认构建当前平台。需要时可指定安装包格式：
 
