@@ -29,6 +29,7 @@ const {
 } = require("./mac-app");
 const { composeMacPkgLifecycle } = require("./mac-pkg");
 const { withLinuxInstallers } = require("./linux-installer");
+const { writeMultiSizeIco } = require("./nsis-icon");
 
 const CJS_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.cjs";
 const ESM_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.mjs";
@@ -191,6 +192,9 @@ async function afterPack(context, options, spawn = spawnSync, resolvers = {}) {
   }
   const executable = resolveExecutable(context, appInfo);
   const iconPath = await resolveIconPath(context, options, projectDir);
+  if (context.electronPlatformName === "win32" && options.nsisIconPath) {
+    writeMultiSizeIco(iconPath, options.nsisIconPath);
+  }
   const electronDist = resolveElectronDist(packager, projectDir);
   let macElectronBundle;
   let macArchitecture;

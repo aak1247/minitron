@@ -61,6 +61,41 @@ test("withMinitron allows automatic launcher and embedded runtime resolution", (
   assert.deepEqual(config.linux.target, ["deb", "rpm"]);
 });
 
+test("defaults NSIS installer and uninstaller icons to generated multi-size app icon", (t) => {
+  const projectDir = makeTempDir();
+  t.after(() => fs.rmSync(projectDir, { recursive: true, force: true }));
+  const original = { nsis: {} };
+
+  const config = withMinitron(original, { projectDir });
+
+  assert.match(config.nsis.installerIcon, /minitron-nsis-icons/);
+  assert.equal(config.nsis.installerIcon, config.nsis.uninstallerIcon);
+  assert.equal(original.nsis.installerIcon, undefined);
+  assert.equal(original.nsis.uninstallerIcon, undefined);
+});
+
+test("preserves explicit and build-resource NSIS icons", (t) => {
+  const projectDir = makeTempDir();
+  t.after(() => fs.rmSync(projectDir, { recursive: true, force: true }));
+  const explicit = withMinitron({ nsis: {
+    installerIcon: "custom-installer.ico",
+    uninstallerIcon: "custom-uninstaller.ico",
+  } }, { projectDir });
+  assert.equal(explicit.nsis.installerIcon, "custom-installer.ico");
+  assert.equal(explicit.nsis.uninstallerIcon, "custom-uninstaller.ico");
+
+  const buildResources = path.join(projectDir, "branding");
+  fs.mkdirSync(buildResources);
+  fs.writeFileSync(path.join(buildResources, "installerIcon.ico"), "custom-installer");
+  fs.writeFileSync(path.join(buildResources, "uninstallerIcon.ico"), "custom-uninstaller");
+  const defaults = withMinitron({
+    directories: { buildResources: "branding" },
+    nsis: {},
+  }, { projectDir });
+  assert.equal(defaults.nsis.installerIcon, undefined);
+  assert.equal(defaults.nsis.uninstallerIcon, undefined);
+});
+
 test("withMinitron preserves explicit Linux targets and adds Linux defaults alongside global targets", (t) => {
   const projectDir = makeTempDir();
   t.after(() => fs.rmSync(projectDir, { recursive: true, force: true }));
@@ -438,8 +473,11 @@ test("an explicit legacy launcher is rejected when no runtime manifest is config
   assert.equal(runtimeResolverCalled, false);
 });
 
-test("afterPack converts a Windows fixture, preserving ASAR unpacked files and user resources", async (t) => {
+test("afterPack converts a Windows fixture and prepares NSIS icons from the application icon", async (t) => {
   const fixture = await makeFixture(t);
+  const applicationPng = fs.readFileSync(require.resolve("app-builder-lib/templates/icons/electron-linux/256x256.png"));
+  fs.writeFileSync(fixture.iconPath, applicationPng);
+  const nsisIconPath = path.join(fixture.root, "temporary", "application.ico");
   const hookCalls = [];
   const context = makeContext(fixture, "win32");
   const spawn = (executable, args) => {
@@ -454,6 +492,7 @@ test("afterPack converts a Windows fixture, preserving ASAR unpacked files and u
     allowLocalhostHttp: true,
     manifestPublicKey: Buffer.alloc(32).toString("base64"),
     iconPath: fixture.iconPath,
+    nsisIconPath,
   }, spawn);
   hookCalls.push("converted");
 
@@ -482,7 +521,13 @@ test("afterPack converts a Windows fixture, preserving ASAR unpacked files and u
   assert.equal(asar.statFile(fixture.archivePath, "native/addon.node").unpacked, true);
   assert.equal(asar.extractFile(fixture.archivePath, "native/addon.node").toString("utf8"), "native-addon");
   assert.equal(fs.readFileSync(path.join(`${fixture.archivePath}.unpacked`, "native", "developer-extra.bin"), "utf8"), "untracked-sidecar-extra");
-  assert.deepEqual(fs.readFileSync(path.join(fixture.resourcesDir, "minitron-icon.png")), PNG);
+  assert.deepEqual(fs.readFileSync(path.join(fixture.resourcesDir, "minitron-icon.png")), applicationPng);
+  const nsisIcon = fs.readFileSync(nsisIconPath);
+  assert.equal(nsisIcon.readUInt16LE(4), 7);
+  assert.deepEqual(Array.from({ length: 7 }, (_, index) => {
+    const width = nsisIcon[6 + index * 16] || 256;
+    return width;
+  }), [16, 24, 32, 48, 64, 128, 256]);
   assert.equal(fs.readFileSync(path.join(fixture.appOutDir, "Fixture.exe"), "utf8"), "launcher-binary");
   assert.equal(fs.existsSync(path.join(fixture.appOutDir, "electron.exe")), false);
   assert.equal(fs.existsSync(path.join(fixture.resourcesDir, "runtime.pak")), false);

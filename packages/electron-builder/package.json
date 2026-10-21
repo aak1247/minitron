@@ -26,7 +26,8 @@
     "tar": "7.5.22",
     "app-builder-lib": "24.13.3",
     "builder-util": "24.13.1",
-    "read-config-file": "6.3.2"
+    "read-config-file": "6.3.2",
+    "pngjs": "7.0.0"
   },
   "files": [
     "index.js",
