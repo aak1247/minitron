@@ -1380,6 +1380,7 @@ async function protectInstallation(installation) {
   const script = path.join(work, 'protect-installation.ps1');
   await fs.writeFile(script, [
     '$ErrorActionPreference = "Stop"',
+    'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1")',
     '$directory = $env:KARVIS_E2E_INSTALL_DIRECTORY',
     '$acl = Get-Acl -LiteralPath $directory',
     '[IO.File]::WriteAllText($env:KARVIS_E2E_ACL_BACKUP, $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access))',
@@ -1404,9 +1405,14 @@ async function protectInstallation(installation) {
 
 async function restoreInstallation(installation) {
   if (!installation?.aclBackup || !await exists(installation.directory)) return;
+  if (!await exists(installation.aclBackup)) {
+    delete installation.aclBackup;
+    return;
+  }
   const script = path.join(work, 'restore-installation.ps1');
   await fs.writeFile(script, [
     '$ErrorActionPreference = "Stop"',
+    'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1")',
     '$acl = Get-Acl -LiteralPath $env:KARVIS_E2E_INSTALL_DIRECTORY',
     '$acl.SetSecurityDescriptorSddlForm([IO.File]::ReadAllText($env:KARVIS_E2E_ACL_BACKUP), [Security.AccessControl.AccessControlSections]::Access)',
     'Set-Acl -LiteralPath $env:KARVIS_E2E_INSTALL_DIRECTORY -AclObject $acl',
