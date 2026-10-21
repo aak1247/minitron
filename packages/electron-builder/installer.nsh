@@ -45,6 +45,9 @@ Var /GLOBAL minitronProcessRecord
       StrCpy $minitronProcessRecord "$minitronLifecycleOutput\process.json"
     ${EndIf}
   ${EndIf}
+  ${IfNot} ${FileExists} "$minitronProcessRecord"
+    StrCpy $minitronProcessRecord "$INSTDIR\updates\process.json"
+  ${EndIf}
   ${If} ${FileExists} "$minitronProcessRecord"
     ${IfNot} ${Silent}
       ${IfNot} ${isUpdated}
