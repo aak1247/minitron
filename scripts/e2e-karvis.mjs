@@ -17,19 +17,20 @@ const adapterPath = path.join(repo, 'packages/electron-builder/index.js');
 const options = parseArguments(process.argv.slice(2));
 
 if (options.help) {
-  console.log('Usage: node scripts/e2e-karvis.mjs --project <Karvis project> --launcher <minitron.exe> --runtime-zip <Electron 28.3.3 ZIP> [--observe-ms <milliseconds>] [--skip-baseline]');
+  console.log('Usage: node scripts/e2e-karvis.mjs --project <Karvis project> [--published-package <exact version> | --launcher <minitron.exe> --runtime-zip <Electron 28.3.3 ZIP>] [--observe-ms <milliseconds>] [--skip-baseline]');
   process.exit(0);
 }
-for (const key of ['project', 'launcher', 'runtime-zip']) {
+if (options['published-package'] && !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(options['published-package'])) throw new Error('--published-package must be an exact npm version');
+for (const key of options['published-package'] ? ['project'] : ['project', 'launcher', 'runtime-zip']) {
   if (!options[key]) throw new Error('Missing --' + key);
 }
 if (process.platform !== 'win32') throw new Error('Karvis NSIS E2E must run on Windows');
 if (process.arch !== 'x64') throw new Error('Karvis E2E currently expects a win32-x64 Electron runtime');
 
 const projectDir = path.resolve(options.project);
-const launcherPath = path.resolve(options.launcher);
-const runtimeZip = path.resolve(options['runtime-zip']);
-for (const [label, filename] of [['Karvis project', path.join(projectDir, 'package.json')], ['Minitron launcher', launcherPath], ['Electron runtime ZIP', runtimeZip], ['electron-builder adapter', adapterPath]]) {
+const launcherPath = path.resolve(options.launcher || path.join(repo, 'shell/target/release/minitron.exe'));
+const runtimeZip = options['runtime-zip'] ? path.resolve(options['runtime-zip']) : null;
+for (const [label, filename] of [['Karvis project', path.join(projectDir, 'package.json')], ['Minitron launcher (PE icon reference)', launcherPath], ...(!options['published-package'] ? [['Electron runtime ZIP', runtimeZip], ['electron-builder adapter', adapterPath]] : [])]) {
   const stat = await fs.stat(filename).catch(() => null);
   if (!stat || !stat.isFile()) throw new Error(label + ' is missing: ' + filename);
 }
@@ -55,12 +56,13 @@ const report = {
   runtimeZip,
   runtimeVersion,
   runtimePlatform,
+  publishedPackage: options['published-package'] ? 'minitron-builder@' + options['published-package'] : null,
   work,
   results: [],
   commands: [],
   builds: {},
   filesizes: {
-    runtimeZipBytes: await fileSize(runtimeZip),
+    runtimeZipBytes: runtimeZip ? await fileSize(runtimeZip) : null,
     minitronInstallerBytes: {},
     unpackedAppBytes: {},
     electronBuilderBaselineInstallerBytes: null,
@@ -332,6 +334,20 @@ try {
   report.builds.peer200 = summarizeBuild(peer200, peer200Zip);
   report.filesizes.minitronInstallerBytes.peer200 = peer200.installerBytes;
   report.filesizes.unpackedAppBytes.peer200 = peer200.unpackedBytes;
+  if (options['published-package']) {
+    await step('published CLI preserves default official runtime downloads without an update server', async () => {
+      report.runtimeConfiguration = [];
+      for (const build of [target200, target201, peer200]) {
+        const config = await fs.readFile(path.join(build.unpackedDir, 'minitron.toml'), 'utf8');
+        assert.match(config, /manifest_url\s*=\s*""/);
+        assert.match(config, /\[runtime_download\]/);
+        assert.match(config, /https:\/\/github\.com\/electron\/electron\/releases\/download\/v28\.3\.3\/electron-v28\.3\.3-win32-x64\.zip/);
+        assert(!(await exists(path.join(build.unpackedDir, 'electron.exe'))), 'Installer still bundles Electron');
+        assert(!(await exists(path.join(build.unpackedDir, 'chrome_elf.dll'))), 'Installer still bundles Chromium');
+        report.runtimeConfiguration.push({ label: build.label, config, package: build.publishedPackage });
+      }
+    });
+  }
   report.targetManifests = {
     initial: currentManifests.target.app.version,
     upgradeReady: target201Manifest.app.version,
@@ -605,6 +621,7 @@ async function copyProjectSnapshot(source, destination) {
   const assetsDestination = path.join(destination, 'assets');
   if (await exists(assetsSource)) await fs.cp(assetsSource, assetsDestination, { recursive: true, dereference: false, force: true });
   const dependencies = path.join(source, 'node_modules');
+  if (options['published-package']) return;
   const dependencyStat = await fs.stat(dependencies).catch(() => null);
   if (!dependencyStat || !dependencyStat.isDirectory()) throw new Error('Karvis node_modules is required for the isolated build: ' + dependencies);
   const dependencyTarget = await fs.realpath(dependencies);
@@ -627,6 +644,19 @@ async function buildInstaller(settings) {
   packageJson.version = settings.version;
   delete packageJson.build;
   await fs.writeFile(packagePath, JSON.stringify(packageJson, null, 2) + '\n');
+
+  const npmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  let publishedPackage;
+  if (options['published-package']) {
+    await runCommand(process.execPath, [npmCli, 'install', '--save-dev', '--save-exact', 'minitron-builder@' + options['published-package'], '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund'], {
+      cwd: projectCopy, timeout: 15 * 60_000, label: settings.label + '-install-published-npm', logsDir,
+    });
+    const lock = JSON.parse(await fs.readFile(path.join(projectCopy, 'package-lock.json'), 'utf8'));
+    publishedPackage = lock.packages['node_modules/minitron-builder'];
+    assert.equal(publishedPackage.version, options['published-package']);
+    assert.match(publishedPackage.resolved, /^https:\/\/registry\.npmjs\.org\/minitron-builder\/-\/minitron-builder-/);
+    assert.match(publishedPackage.integrity, /^sha512-/);
+  }
 
   const nodeModules = path.join(projectCopy, 'node_modules');
   const builderCli = path.join(nodeModules, 'electron-builder', 'cli.js');
@@ -706,10 +736,13 @@ async function buildInstaller(settings) {
     }, null, 2) + ');',
     '',
   ].join('\n');
-  await fs.writeFile(configPath, configText);
+  await fs.writeFile(configPath, options['published-package'] ? "'use strict';\nmodule.exports = " + JSON.stringify(buildConfig, null, 2) + ';\n' : configText);
 
   const env = { ...process.env, NODE_PATH: [nodeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter) };
   delete env.ELECTRON_RUN_AS_NODE;
+  if (options['published-package']) {
+    for (const key of Object.keys(env)) if (key.startsWith('MINITRON_')) delete env[key];
+  }
   const buildScript = packageJson.scripts && packageJson.scripts.build;
   if (typeof buildScript !== 'string' || buildScript.trim() === '') throw new Error('Karvis package.json must define a build script');
   await runCommand(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm run build'], {
@@ -722,11 +755,12 @@ async function buildInstaller(settings) {
   const compiledMain = path.join(projectCopy, 'dist', 'main', 'index.js');
   if (!await exists(compiledMain)) throw new Error('Karvis build did not produce dist/main/index.js: ' + compiledMain);
   await injectDiagnostics(compiledMain);
-  await runCommand(process.execPath, [builderCli, '--win', 'nsis', '--x64', '--config', configPath], {
+  const packagingCli = options['published-package'] ? path.join(nodeModules, 'minitron-builder', 'bin', 'cli.js') : builderCli;
+  await runCommand(process.execPath, [packagingCli, '--win', 'nsis', '--x64', '--config', configPath], {
     cwd: projectCopy,
     env,
     timeout: 20 * 60_000,
-    label: settings.label + '-electron-builder',
+    label: settings.label + (options['published-package'] ? '-published-minitron-builder' : '-electron-builder'),
     logsDir,
   });
   const unpackedDir = path.join(outputDir, 'win-unpacked');
@@ -750,6 +784,7 @@ async function buildInstaller(settings) {
     originalBuild,
     buildConfig,
     builderVersion: builderPackage.version,
+    publishedPackage,
     pngIconPath,
     customIncludePath,
     installMarkerPath,
@@ -990,6 +1025,7 @@ async function createUpdateArchive(build, script, workDir, label) {
 }
 
 async function publishManifest(settings) {
+  if (options['published-package']) return { app: { version: settings.version } };
   let previousManifestPath;
   if (settings.previousManifest) {
     previousManifestPath = path.join(work, 'previous-' + settings.owner + '-' + settings.version + '.json');
