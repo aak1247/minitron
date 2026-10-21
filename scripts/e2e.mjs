@@ -203,7 +203,7 @@ try {
       await fs.chmod(executable, 0o755);
       await fs.copyFile(path.join(appA.directory, configName), path.join(macos, configName));
       await fs.cp(report.baseline.out, path.join(contents, 'Resources'), { recursive: true });
-      await fs.writeFile(path.join(contents, 'Info.plist'), '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>minitron</string><key>CFBundleName</key><string>Minitron E2E</string><key>CFBundleIdentifier</key><string>com.example.myapp</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1.0.0</string><key>CFBundleShortVersionString</key><string>1.0.0</string></dict></plist>');
+      await fs.writeFile(path.join(contents, 'Info.plist'), '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>minitron</string><key>CFBundleName</key><string>myapp</string><key>CFBundleIdentifier</key><string>com.example.myapp</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1.0.0</string><key>CFBundleShortVersionString</key><string>1.0.0</string></dict></plist>');
       const before = (await fs.readdir(bundle, { recursive: true })).sort();
       const requestsBefore = requests.length;
       const value = smoke(await run(executable, ['--offline']), false);
@@ -213,7 +213,7 @@ try {
       assert.deepEqual((await fs.readdir(bundle, { recursive: true })).sort(), before, 'launch must not write state into the installed bundle');
       const updates = (await run(executable, ['--state-dir'])).stdout.trim();
       const hosts = await fs.readdir(path.join(updates, 'mac-hosts'), { recursive: true });
-      assert(hosts.some(name => name.endsWith('Minitron E2E Helper.app/Contents/Info.plist')));
+      assert(hosts.some(name => name.endsWith('myapp Helper.app/Contents/Info.plist')));
       assert(hosts.some(name => name.endsWith('Minitron E2E.app/Contents/Frameworks/Electron Framework.framework')));
       await run(executable, ['--uninstall']);
       assert.equal(await exists(updates), false, 'uninstall must remove the private host state');
