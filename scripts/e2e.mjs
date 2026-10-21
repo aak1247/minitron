@@ -109,11 +109,11 @@ async function run(executable, args = [], env = {}, expected = 0, timeout) {
   assert.equal(result.code, expected, JSON.stringify(result).slice(-7000));
   return result;
 }
-function smoke(result) {
+function smoke(result, expectedDefaultApp = true) {
   const line = result.stdout.split(/\r?\n/).find(line => line.startsWith('SMOKE:'));
   assert(line, `Missing real UI smoke result: ${JSON.stringify(result).slice(-3000)}`);
   const value = JSON.parse(line.slice(6));
-  assert.equal(value.ipc, true); assert.equal(value.defaultApp, true);
+  assert.equal(value.ipc, true); assert.equal(value.defaultApp, expectedDefaultApp);
   return value;
 }
 async function waitFor(predicate, message, timeout = 30_000) {
@@ -192,6 +192,34 @@ try {
     assert.equal(requests.length, before);
     report.offlineStartupMilliseconds = Date.now() - started;
   });
+  if (process.platform === 'darwin') {
+    await check('branded macOS bundle launches its renderer with shared frameworks and private helpers', async () => {
+      const bundle = path.join(work, 'Minitron E2E.app');
+      const contents = path.join(bundle, 'Contents');
+      const macos = path.join(contents, 'MacOS');
+      const executable = path.join(macos, 'minitron');
+      await fs.mkdir(macos, { recursive: true });
+      await fs.copyFile(options.shell, executable);
+      await fs.chmod(executable, 0o755);
+      await fs.copyFile(path.join(appA.directory, configName), path.join(macos, configName));
+      await fs.cp(report.baseline.out, path.join(contents, 'Resources'), { recursive: true });
+      await fs.writeFile(path.join(contents, 'Info.plist'), '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>minitron</string><key>CFBundleName</key><string>Minitron E2E</string><key>CFBundleIdentifier</key><string>com.example.myapp</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1.0.0</string><key>CFBundleShortVersionString</key><string>1.0.0</string></dict></plist>');
+      const before = (await fs.readdir(bundle, { recursive: true })).sort();
+      const requestsBefore = requests.length;
+      const value = smoke(await run(executable, ['--offline']), false);
+      assert.equal(value.appVersion, '1.0.0');
+      assert.equal(value.electron, options['runtime-version']);
+      assert.equal(requests.length, requestsBefore);
+      assert.deepEqual((await fs.readdir(bundle, { recursive: true })).sort(), before, 'launch must not write state into the installed bundle');
+      const updates = (await run(executable, ['--state-dir'])).stdout.trim();
+      const hosts = await fs.readdir(path.join(updates, 'mac-hosts'), { recursive: true });
+      assert(hosts.some(name => name.endsWith('Minitron E2E Helper.app/Contents/Info.plist')));
+      assert(hosts.some(name => name.endsWith('Minitron E2E.app/Contents/Frameworks/Electron Framework.framework')));
+      await run(executable, ['--uninstall']);
+      assert.equal(await exists(updates), false, 'uninstall must remove the private host state');
+      assert(await exists(runtimePath(cache, options['runtime-version'])), 'other installations must retain the shared runtime');
+    });
+  }
   await check('real native addon loads from unpacked resources in exact shared Electron', async () => {
     if (!options['native-asar']) {
       const nativeSource = path.join(work, 'native-source');
