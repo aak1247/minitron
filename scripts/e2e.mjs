@@ -214,7 +214,16 @@ try {
       const updates = (await run(executable, ['--state-dir'])).stdout.trim();
       const hosts = await fs.readdir(path.join(updates, 'mac-hosts'), { recursive: true });
       assert(hosts.some(name => name.endsWith('myapp Helper.app/Contents/Info.plist')));
-      assert(hosts.some(name => name.endsWith('myapp.app/Contents/Frameworks/Electron Framework.framework')));
+      const frameworkName = hosts.find(name => name.endsWith('myapp.app/Contents/Frameworks/Electron Framework.framework'));
+      assert(frameworkName);
+      const hostFramework = path.join(updates, 'mac-hosts', frameworkName);
+      assert((await fs.lstat(hostFramework)).isDirectory(), 'the Electron framework must have a host-local directory');
+      const [hostFile, sharedFile] = await Promise.all([
+        fs.stat(path.join(hostFramework, 'Electron Framework'), { bigint: true }),
+        fs.stat(path.join(runtimePath(cache, options['runtime-version']), 'Electron.app/Contents/Frameworks/Electron Framework.framework/Electron Framework'), { bigint: true }),
+      ]);
+      assert.equal(hostFile.dev, sharedFile.dev);
+      assert.equal(hostFile.ino, sharedFile.ino, 'framework files must share storage with the runtime');
       await run(executable, ['--uninstall']);
       assert.equal(await exists(updates), false, 'uninstall must remove the private host state');
       assert(await exists(runtimePath(cache, options['runtime-version'])), 'other installations must retain the shared runtime');
