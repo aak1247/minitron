@@ -281,6 +281,45 @@ test("converts a configured Windows ICO on native Windows", { skip: process.plat
   assert.equal(converted.subarray(0, PNG.length).equals(PNG), true);
 });
 
+test("extracts the largest PNG frame directly from a legal PNG-backed ICO", async (t) => {
+  const fixture = await makeFixture(t);
+  const iconPath = path.join(fixture.projectDir, "assets", "app.png.ico");
+  fs.mkdirSync(path.dirname(iconPath), { recursive: true });
+  const smallPng = fs.readFileSync(require.resolve("app-builder-lib/templates/icons/electron-linux/16x16.png"));
+  const largePng = fs.readFileSync(require.resolve("app-builder-lib/templates/icons/electron-linux/256x256.png"));
+  fs.writeFileSync(iconPath, createIcoFromPngFrames([smallPng, largePng]));
+
+  const packager = makeIconPackager(fixture.projectDir, {
+    directories: { output: "icon-output" },
+    win: { icon: "assets/app.png.ico" },
+  });
+  const extracted = await resolveIconPath({ packager, electronPlatformName: "win32" }, {}, fixture.projectDir);
+  assert.deepEqual(extracted, largePng);
+});
+
+test("rejects ICO frame offsets and truncated PNG frames", async (t) => {
+  const fixture = await makeFixture(t);
+  const iconPath = path.join(fixture.projectDir, "assets", "broken.ico");
+  fs.mkdirSync(path.dirname(iconPath), { recursive: true });
+  const png = fs.readFileSync(require.resolve("app-builder-lib/templates/icons/electron-linux/256x256.png"));
+  const packager = makeIconPackager(fixture.projectDir, {
+    directories: { output: "icon-output" },
+    win: { icon: "assets/broken.ico" },
+  });
+  const context = { packager, electronPlatformName: "win32" };
+
+  const badOffset = createIcoFromPngFrames([png]);
+  badOffset.writeUInt32LE(badOffset.length + 1, 18);
+  fs.writeFileSync(iconPath, badOffset);
+  await assert.rejects(resolveIconPath(context, {}, fixture.projectDir), /frame 0 is out of bounds/);
+
+  fs.writeFileSync(iconPath, createIcoFromPngFrames([png.subarray(0, png.length - 8)]));
+  await assert.rejects(resolveIconPath(context, {}, fixture.projectDir), /truncated or invalid PNG/);
+
+  fs.writeFileSync(iconPath, createIcoFromPngFrames([png]).subarray(0, 21));
+  await assert.rejects(resolveIconPath(context, {}, fixture.projectDir), /truncated ICO directory/);
+});
+
 test("explicit Minitron icon paths still require PNG files", async (t) => {
   const fixture = await makeFixture(t);
   const invalidPath = path.join(fixture.projectDir, "assets", "not-an-icon.txt");
@@ -764,6 +803,31 @@ function makeIconPackager(projectDir, config) {
   packager.platform = Platform.MAC;
   packager.platformSpecificBuildOptions = {};
   return packager;
+}
+
+function createIcoFromPngFrames(pngFrames) {
+  const directorySize = 6 + pngFrames.length * 16;
+  const directory = Buffer.alloc(directorySize);
+  directory.writeUInt16LE(0, 0);
+  directory.writeUInt16LE(1, 2);
+  directory.writeUInt16LE(pngFrames.length, 4);
+
+  let frameOffset = directorySize;
+  pngFrames.forEach((png, index) => {
+    const entry = 6 + index * 16;
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    directory[entry] = width === 256 ? 0 : width;
+    directory[entry + 1] = height === 256 ? 0 : height;
+    directory[entry + 2] = 0;
+    directory[entry + 3] = 0;
+    directory.writeUInt16LE(1, entry + 4);
+    directory.writeUInt16LE(32, entry + 6);
+    directory.writeUInt32LE(png.length, entry + 8);
+    directory.writeUInt32LE(frameOffset, entry + 12);
+    frameOffset += png.length;
+  });
+  return Buffer.concat([directory, ...pngFrames]);
 }
 
 function makeTempDir() {

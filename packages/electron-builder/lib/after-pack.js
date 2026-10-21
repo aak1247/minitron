@@ -445,8 +445,12 @@ function selectLargestPng(icons, source) {
 }
 
 function convertIcoToPng(source) {
+  const contents = fs.readFileSync(source);
+  const pngFrame = extractLargestPngFrameFromIco(contents, source);
+  if (pngFrame) return pngFrame;
+
   if (process.platform !== "win32") {
-    throw new Error(`Converting a Windows .ico icon requires native Windows packaging: ${source}`);
+    throw new Error(`Converting a BMP-based Windows .ico icon requires native Windows packaging: ${source}`);
   }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "minitron-icon-"));
   const output = path.join(directory, "icon.png");
@@ -475,6 +479,61 @@ function convertIcoToPng(source) {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+
+function extractLargestPngFrameFromIco(contents, source) {
+  const fail = (reason) => { throw new Error(`Invalid Windows .ico icon (${source}): ${reason}`); };
+  if (contents.length < 6) fail("truncated ICO header");
+  if (contents.readUInt16LE(0) !== 0 || contents.readUInt16LE(2) !== 1) fail("invalid ICO header");
+
+  const frameCount = contents.readUInt16LE(4);
+  if (frameCount === 0) fail("ICO contains no frames");
+  const directoryEnd = 6 + frameCount * 16;
+  if (directoryEnd > contents.length) fail("truncated ICO directory");
+
+  const pngFrames = [];
+  for (let index = 0; index < frameCount; index += 1) {
+    const entry = 6 + index * 16;
+    const width = contents[entry] || 256;
+    const height = contents[entry + 1] || 256;
+    const bitDepth = contents.readUInt16LE(entry + 6);
+    const frameLength = contents.readUInt32LE(entry + 8);
+    const frameOffset = contents.readUInt32LE(entry + 12);
+    if (frameLength === 0 || frameOffset < directoryEnd || frameOffset > contents.length
+      || frameLength > contents.length - frameOffset) {
+      fail(`frame ${index} is out of bounds`);
+    }
+
+    const frame = contents.subarray(frameOffset, frameOffset + frameLength);
+    if (!isPngBytes(frame)) continue;
+    if (!isCompletePngFrame(frame)) fail(`frame ${index} contains a truncated or invalid PNG`);
+    pngFrames.push({ frame, area: width * height, bitDepth });
+  }
+
+  pngFrames.sort((left, right) => right.area - left.area || right.bitDepth - left.bitDepth);
+  return pngFrames.length === 0 ? null : Buffer.from(pngFrames[0].frame);
+}
+
+function isCompletePngFrame(bytes) {
+  if (!isPngBytes(bytes)) return false;
+  let offset = PNG_SIGNATURE.length;
+  let hasHeader = false;
+  let hasImageData = false;
+  while (offset + 12 <= bytes.length) {
+    const chunkLength = bytes.readUInt32BE(offset);
+    if (chunkLength > bytes.length - offset - 12) return false;
+    const chunkType = bytes.toString("ascii", offset + 4, offset + 8);
+    const chunkDataOffset = offset + 8;
+    if (!hasHeader) {
+      if (chunkType !== "IHDR" || chunkLength !== 13) return false;
+      if (bytes.readUInt32BE(chunkDataOffset) === 0 || bytes.readUInt32BE(chunkDataOffset + 4) === 0) return false;
+      hasHeader = true;
+    }
+    if (chunkType === "IDAT") hasImageData = true;
+    offset += chunkLength + 12;
+    if (chunkType === "IEND") return chunkLength === 0 && hasHeader && hasImageData;
+  }
+  return false;
 }
 
 function isPngBytes(bytes) {
