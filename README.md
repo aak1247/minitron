@@ -60,16 +60,16 @@ No update server is needed for the first launch: the installed app downloads its
 
 ## Package size
 
-v0.3.0, using the included example and Electron 32.2.0. Downloads are compressed; other columns show uncompressed file sizes.
+v0.4.0, using the included example and Electron 32.2.0. Downloads are compressed; other columns show uncompressed file sizes.
 
 | Platform | Launcher download | Launcher | Example app | Electron runtime |
 |---|---:|---:|---:|---:|
-| Windows x64 | [5.20 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-windows-x64.zip) | 9.67 MiB | 9.68 MiB | 264.74 MiB |
-| Linux x64 | [6.53 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-linux-x64.tar.gz) | 13.27 MiB | 13.27 MiB | 264.98 MiB |
-| macOS Intel | [5.31 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-macos-x64.tar.gz) | 9.74 MiB | 9.75 MiB | 246.06 MiB |
-| macOS Apple Silicon | [5.14 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-macos-arm64.tar.gz) | 8.47 MiB | 8.48 MiB | 239.90 MiB |
+| Windows x64 | [5.20 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-windows-x64.zip) | 9.68 MiB | 9.69 MiB | 264.74 MiB |
+| Linux x64 | [6.53 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-linux-x64.tar.gz) | 13.28 MiB | 13.28 MiB | 264.98 MiB |
+| macOS Intel | [5.31 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-macos-x64.tar.gz) | 9.74 MiB | 9.75 MiB | 246.06 MiB |
+| macOS Apple Silicon | [5.14 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-macos-arm64.tar.gz) | 8.49 MiB | 8.49 MiB | 239.90 MiB |
 
-The example app includes the launcher, configuration and app resources; its shared runtime is separate. The example app update ZIP is **8.22 KiB**. Exact byte counts are available in [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.3.0/sizes.json).
+The example app includes the launcher, configuration and app resources; its shared runtime is separate. The example app update ZIP is **8.22 KiB**. Exact byte counts are available in [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.4.0/sizes.json).
 
 Karvis AI 2.0.0 on Windows (Electron 28.3.3, NSIS): **77.34 MiB → 10.56 MiB**, about **86% smaller**. The shared runtime is separate and downloads once on first launch.
 

@@ -60,16 +60,16 @@ macOS x64 与 arm64 需分别构建。Linux DEB/RPM 需要 `homepage` 和有效�
 
 ## 包体积
 
-v0.3.0，使用内置示例应用和 Electron 32.2.0。下载列为压缩包体积，其余为解压后的文件大小。
+v0.4.0，使用内置示例应用和 Electron 32.2.0。下载列为压缩包体积，其余为解压后的文件大小。
 
 | 平台 | 启动器下载 | 启动器 | 示例应用目录 | Electron 运行时 |
 |---|---:|---:|---:|---:|
-| Windows x64 | [5.20 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-windows-x64.zip) | 9.67 MiB | 9.68 MiB | 264.74 MiB |
-| Linux x64 | [6.53 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-linux-x64.tar.gz) | 13.27 MiB | 13.27 MiB | 264.98 MiB |
-| macOS Intel | [5.31 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-macos-x64.tar.gz) | 9.74 MiB | 9.75 MiB | 246.06 MiB |
-| macOS Apple Silicon | [5.14 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-macos-arm64.tar.gz) | 8.47 MiB | 8.48 MiB | 239.90 MiB |
+| Windows x64 | [5.20 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-windows-x64.zip) | 9.68 MiB | 9.69 MiB | 264.74 MiB |
+| Linux x64 | [6.53 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-linux-x64.tar.gz) | 13.28 MiB | 13.28 MiB | 264.98 MiB |
+| macOS Intel | [5.31 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-macos-x64.tar.gz) | 9.74 MiB | 9.75 MiB | 246.06 MiB |
+| macOS Apple Silicon | [5.14 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.0/minitron-v0.4.0-macos-arm64.tar.gz) | 8.49 MiB | 8.49 MiB | 239.90 MiB |
 
-示例应用目录包含启动器、配置和应用资源，不含共享运行时。示例的应用更新 ZIP 仅 **8.22 KiB**。完整字节数见 Release 中的 [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.3.0/sizes.json)。
+示例应用目录包含启动器、配置和应用资源，不含共享运行时。示例的应用更新 ZIP 仅 **8.22 KiB**。完整字节数见 Release 中的 [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.4.0/sizes.json)。
 
 Karvis AI 2.0.0 的 Windows 安装包（Electron 28.3.3、NSIS）：**77.34 MiB → 10.56 MiB**，缩小约 **86%**。共享运行时另计，在首次启动时下载一次。
 
