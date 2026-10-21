@@ -24,7 +24,7 @@ foreach ($file in @($RuntimeZip, $UpgradeRuntimeZip, $ShellBinary)) {
 if (-not $NewShellBinary) {
     $previousVersion = $env:ERS_BUILD_VERSION
     $previousCargoHome = $env:CARGO_HOME
-    $env:ERS_BUILD_VERSION = '0.2.1'
+    $env:ERS_BUILD_VERSION = '0.3.1'
     if ($CargoHome) { $env:CARGO_HOME = $CargoHome }
     Push-Location (Join-Path $repoRoot 'shell')
     try {
@@ -32,7 +32,7 @@ if (-not $NewShellBinary) {
         if ($LASTEXITCODE -ne 0) { throw 'Updated-shell fixture build failed' }
         $toolDir = Join-Path $repoRoot 'dist/test-tools'
         New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
-        $NewShellBinary = Join-Path $toolDir 'minitron-0.2.1.exe'
+        $NewShellBinary = Join-Path $toolDir 'minitron-0.3.1.exe'
         Copy-Item -LiteralPath (Join-Path $repoRoot 'shell/target/debug/minitron.exe') -Destination $NewShellBinary -Force
     } finally { Pop-Location; $env:ERS_BUILD_VERSION = $previousVersion; $env:CARGO_HOME = $previousCargoHome }
 }

@@ -74,13 +74,13 @@ done
 
 if [[ -z "$new_shell_binary" ]]; then
   if [[ -n "$cargo_home" ]]; then
-    (cd "$repo_root/shell" && CARGO_HOME="$cargo_home" ERS_BUILD_VERSION=0.2.1 cargo build --locked)
+    (cd "$repo_root/shell" && CARGO_HOME="$cargo_home" ERS_BUILD_VERSION=0.3.1 cargo build --locked)
   else
-    (cd "$repo_root/shell" && ERS_BUILD_VERSION=0.2.1 cargo build --locked)
+    (cd "$repo_root/shell" && ERS_BUILD_VERSION=0.3.1 cargo build --locked)
   fi
   tool_dir="$repo_root/dist/test-tools"
   mkdir -p "$tool_dir"
-  new_shell_binary="$tool_dir/minitron-0.2.1"
+  new_shell_binary="$tool_dir/minitron-0.3.1"
   install -m 755 "$repo_root/shell/target/debug/minitron" "$new_shell_binary"
 fi
 

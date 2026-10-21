@@ -1047,32 +1047,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
-name = "minitron"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "dirs",
- "ed25519-dalek",
- "fs2",
- "libc",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "slint",
- "slint-build",
- "sys-locale",
- "tempfile",
- "toml 0.8.23",
- "ureq",
- "url",
- "windows-sys 0.61.2",
- "winres",
- "zip",
-]
-
-[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2510,6 +2484,32 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "minitron"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "dirs",
+ "ed25519-dalek",
+ "fs2",
+ "libc",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "slint",
+ "slint-build",
+ "sys-locale",
+ "tempfile",
+ "toml 0.8.23",
+ "ureq",
+ "url",
+ "windows-sys 0.61.2",
+ "winres",
+ "zip",
+]
 
 [[package]]
 name = "miniz_oxide"
