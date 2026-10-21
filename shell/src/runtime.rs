@@ -512,14 +512,11 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
         && host_resources.join("app.asar").canonicalize().ok() == active_asar.canonicalize().ok()
         && std::fs::symlink_metadata(&host_frameworks)
             .is_ok_and(|metadata| metadata.file_type().is_dir())
-        && std::fs::read_link(host_frameworks.join("Electron Framework.framework"))
-            .ok()
-            .as_deref()
-            == Some(
-                runtime_frameworks
-                    .join("Electron Framework.framework")
-                    .as_path(),
-            )
+        && macos_hardlinked_framework_matches(
+            &runtime_frameworks.join("Electron Framework.framework"),
+            &host_frameworks.join("Electron Framework.framework"),
+        )
+        .unwrap_or(false)
         && helper_layout_matches;
     if reusable && verify_macos_host_signature(&host_bundle).is_ok() {
         return Ok(host_executable);
@@ -654,6 +651,8 @@ fn create_macos_host_helper_layout(
                 &suffix,
                 false,
             )?;
+        } else if name_text == "Electron Framework.framework" {
+            create_macos_hardlinked_tree(&source, &host_frameworks.join(name))?;
         } else {
             symlink(source, host_frameworks.join(name))?;
         }
@@ -698,6 +697,156 @@ fn create_macos_host_helper_layout(
         }
     }
     Ok(())
+}
+
+/// Materialize the Electron Framework bundle inside the branded host while
+/// sharing its file data with the installed runtime. Chromium resolves some
+/// bundle paths from the physical executable location, so an external
+/// Framework symlink can make otherwise valid resources appear outside the
+/// host bundle to the renderer sandbox.
+#[cfg(target_os = "macos")]
+fn create_macos_hardlinked_tree(source: &Path, destination: &Path) -> Result<()> {
+    let source_root = source
+        .canonicalize()
+        .with_context(|| format!("resolve Electron Framework {}", source.display()))?;
+    create_macos_hardlinked_tree_under_root(source, destination, &source_root)
+}
+
+#[cfg(target_os = "macos")]
+fn create_macos_hardlinked_tree_under_root(
+    source: &Path,
+    destination: &Path,
+    source_root: &Path,
+) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let source_metadata = std::fs::symlink_metadata(source)
+        .with_context(|| format!("inspect Electron Framework {}", source.display()))?;
+    ensure!(
+        source_metadata.file_type().is_dir() && !source_metadata.file_type().is_symlink(),
+        "Electron Framework is not a plain directory: {}",
+        source.display()
+    );
+    std::fs::create_dir(destination).with_context(|| {
+        format!(
+            "create branded Framework directory {}",
+            destination.display()
+        )
+    })?;
+
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_entry = entry.path();
+        let destination_entry = destination.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&source_entry)?;
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            create_macos_hardlinked_tree_under_root(
+                &source_entry,
+                &destination_entry,
+                source_root,
+            )?;
+        } else if file_type.is_file() {
+            std::fs::hard_link(&source_entry, &destination_entry).with_context(|| {
+                format!(
+                    "hard-link shared Electron Framework file {} into {}",
+                    source_entry.display(),
+                    destination_entry.display()
+                )
+            })?;
+        } else if file_type.is_symlink() {
+            let target = std::fs::read_link(&source_entry)?;
+            ensure!(
+                !target.is_absolute(),
+                "Electron Framework contains an absolute symbolic link: {}",
+                source_entry.display()
+            );
+            let resolved_target = source_entry.canonicalize().with_context(|| {
+                format!(
+                    "resolve Electron Framework symbolic link {}",
+                    source_entry.display()
+                )
+            })?;
+            ensure!(
+                resolved_target.starts_with(source_root),
+                "Electron Framework symbolic link escapes its bundle: {}",
+                source_entry.display()
+            );
+            symlink(target, destination_entry)?;
+        } else {
+            bail!(
+                "Electron Framework contains an unsupported filesystem entry: {}",
+                source_entry.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_hardlinked_framework_matches(source: &Path, destination: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let source_metadata = match std::fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("inspect shared Electron Framework"),
+    };
+    let destination_metadata = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("inspect branded Electron Framework"),
+    };
+    if !source_metadata.file_type().is_dir()
+        || source_metadata.file_type().is_symlink()
+        || !destination_metadata.file_type().is_dir()
+        || destination_metadata.file_type().is_symlink()
+    {
+        return Ok(false);
+    }
+
+    let source_names = std::fs::read_dir(source)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
+    let destination_names = std::fs::read_dir(destination)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<std::collections::BTreeSet<_>>>()?;
+    if source_names != destination_names {
+        return Ok(false);
+    }
+
+    for name in source_names {
+        let source_entry = source.join(&name);
+        let destination_entry = destination.join(&name);
+        let source_metadata = std::fs::symlink_metadata(&source_entry)?;
+        let destination_metadata = std::fs::symlink_metadata(&destination_entry)?;
+        let source_type = source_metadata.file_type();
+        let destination_type = destination_metadata.file_type();
+        if source_type.is_dir() {
+            if !destination_type.is_dir()
+                || destination_type.is_symlink()
+                || !macos_hardlinked_framework_matches(&source_entry, &destination_entry)?
+            {
+                return Ok(false);
+            }
+        } else if source_type.is_file() {
+            if !destination_type.is_file()
+                || source_metadata.dev() != destination_metadata.dev()
+                || source_metadata.ino() != destination_metadata.ino()
+            {
+                return Ok(false);
+            }
+        } else if source_type.is_symlink() {
+            if !destination_type.is_symlink()
+                || std::fs::read_link(source_entry)? != std::fs::read_link(destination_entry)?
+            {
+                return Ok(false);
+            }
+        } else {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
@@ -2083,6 +2232,47 @@ mod tests {
             Some("2.0.0")
         );
         assert!(branded.contains("<key>UnknownRuntimeField</key><string>preserve-me</string>"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_branded_framework_hardlinks_shared_files_and_unlinks_safely() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+
+        let root = temp_root("macos-framework-hardlinks");
+        let source = root.join("shared/Electron Framework.framework");
+        let destination = root.join("host/Contents/Frameworks/Electron Framework.framework");
+        let source_resources = source.join("Versions/A/Resources");
+        std::fs::create_dir_all(&source_resources).unwrap();
+        let source_binary = source.join("Versions/A/Electron Framework");
+        let source_resource = source_resources.join("v8_context_snapshot.arm64.bin");
+        std::fs::write(&source_binary, b"shared framework executable").unwrap();
+        std::fs::write(&source_resource, b"shared v8 snapshot").unwrap();
+        symlink("A", source.join("Versions/Current")).unwrap();
+        symlink("Versions/Current/Resources", source.join("Resources")).unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+
+        create_macos_hardlinked_tree(&source, &destination).unwrap();
+        assert!(macos_hardlinked_framework_matches(&source, &destination).unwrap());
+
+        let destination_binary = destination.join("Versions/A/Electron Framework");
+        let source_metadata = std::fs::metadata(&source_binary).unwrap();
+        let destination_metadata = std::fs::metadata(&destination_binary).unwrap();
+        assert_eq!(source_metadata.dev(), destination_metadata.dev());
+        assert_eq!(source_metadata.ino(), destination_metadata.ino());
+        assert_eq!(
+            std::fs::read_link(destination.join("Resources")).unwrap(),
+            PathBuf::from("Versions/Current/Resources")
+        );
+
+        std::fs::remove_dir_all(&destination).unwrap();
+        assert!(source_binary.is_file());
+        assert!(source_resource.is_file());
+        assert_eq!(
+            std::fs::read(&source_resource).unwrap(),
+            b"shared v8 snapshot"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
