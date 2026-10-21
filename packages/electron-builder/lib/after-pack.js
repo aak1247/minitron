@@ -15,6 +15,17 @@ const {
   validatePublicKey,
   validateStableVersion,
 } = require("./validation");
+const {
+  assertNotUniversalIntermediate,
+  getMacArchitecture,
+  removeMacElectronRuntimeFiles,
+  replaceMacExecutable,
+  resolveMacBundlePaths,
+  resolveMacElectronBundle,
+  validateMacElectronVersion,
+  writeMacUninstaller,
+} = require("./mac-app");
+const { composeMacPkgLifecycle } = require("./mac-pkg");
 
 const CJS_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.cjs";
 const ESM_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.mjs";
@@ -54,6 +65,7 @@ async function resolveHook(hook, context) {
 }
 
 async function afterPack(context, options, spawn = spawnSync) {
+  assertSupportedPlatform(context && context.electronPlatformName);
   const packager = context && context.packager;
   if (!packager || typeof packager !== "object") {
     throw new Error("Minitron afterPack requires electron-builder's resolved packager context");
@@ -61,12 +73,8 @@ async function afterPack(context, options, spawn = spawnSync) {
 
   const projectDir = options.projectDir === undefined ? resolveProjectDir(packager) : path.resolve(options.projectDir);
   const appOutDir = path.resolve(context.appOutDir);
-  const resourcesDir = path.join(appOutDir, "resources");
   if (!fs.existsSync(appOutDir) || !fs.statSync(appOutDir).isDirectory()) {
     throw new Error(`electron-builder appOutDir does not exist: ${appOutDir}`);
-  }
-  if (!fs.existsSync(resourcesDir) || !fs.statSync(resourcesDir).isDirectory()) {
-    throw new Error(`electron-builder resources directory does not exist: ${resourcesDir}`);
   }
 
   const launcherPath = resolveFromProject(options.launcherPath, projectDir);
@@ -84,10 +92,26 @@ async function afterPack(context, options, spawn = spawnSync) {
   const allowLocalhostHttp = options.allowLocalhostHttp === undefined ? false : options.allowLocalhostHttp;
   const manifestUrl = validateManifestUrl(options.manifestUrl, allowLocalhostHttp);
   const manifestPublicKey = validatePublicKey(options.manifestPublicKey);
+  const macBundlePaths = context.electronPlatformName === "darwin"
+    ? resolveMacBundlePaths(appOutDir, appInfo)
+    : undefined;
+  const resourcesDir = macBundlePaths ? macBundlePaths.resourcesDir : path.join(appOutDir, "resources");
+  if (!fs.existsSync(resourcesDir) || !fs.statSync(resourcesDir).isDirectory()) {
+    throw new Error(`electron-builder resources directory does not exist: ${resourcesDir}`);
+  }
   const executable = resolveExecutable(context, appInfo);
   const iconPath = resolveIconPath(context, options, projectDir);
   const electronDist = resolveElectronDist(packager, projectDir);
-  validateElectronDist(electronDist, context.electronPlatformName, runtimeVersion);
+  let macElectronBundle;
+  let macArchitecture;
+  if (macBundlePaths) {
+    assertNotUniversalIntermediate(appOutDir);
+    macArchitecture = getMacArchitecture(context.arch);
+    validateMacElectronVersion(electronDist, runtimeVersion);
+    macElectronBundle = resolveMacElectronBundle(electronDist, packager);
+  } else {
+    validateElectronDist(electronDist, context.electronPlatformName, runtimeVersion);
+  }
   if (packager.config && packager.config.asar === false) {
     throw new Error("Minitron requires electron-builder ASAR packaging; build.asar must not be false");
   }
@@ -116,19 +140,31 @@ async function afterPack(context, options, spawn = spawnSync) {
     manifestPublicKey,
   });
 
-  writeFileIfSameOrMissing(path.join(appOutDir, "minitron.toml"), configText, "Minitron configuration");
+  const configPath = macBundlePaths ? macBundlePaths.configPath : path.join(appOutDir, "minitron.toml");
+  writeFileIfSameOrMissing(configPath, configText, "Minitron configuration");
   copyIcon(iconPath, path.join(resourcesDir, "minitron-icon.png"));
-  replaceExecutable(launcherPath, executable.path, launcherVersion, context.electronPlatformName);
-
-  await removeOfficialRuntimeFiles(electronDist, appOutDir, executable.relativePath);
+  if (macBundlePaths) {
+    await replaceMacExecutable(
+      launcherPath,
+      executable.path,
+      macElectronBundle.executablePath,
+      launcherVersion,
+      macArchitecture,
+      replaceExecutable,
+    );
+    await removeMacElectronRuntimeFiles(macElectronBundle, macBundlePaths, appInfo);
+    writeMacUninstaller(macBundlePaths);
+    composeMacPkgLifecycle(context, macBundlePaths, appInfo);
+  } else {
+    replaceExecutable(launcherPath, executable.path, launcherVersion, context.electronPlatformName);
+    await removeOfficialRuntimeFiles(electronDist, appOutDir, executable.relativePath);
+  }
 }
 
 function assertSupportedPlatform(platform) {
-  if (platform !== "win32" && platform !== "linux") {
-    if (platform === "darwin" || platform === "mas") {
-      throw new Error("Minitron does not support macOS packaging yet; app bundle conversion is not implemented");
-    }
-    throw new Error(`Minitron supports only electron-builder win32 and linux targets; received ${String(platform)}`);
+  if (platform === "mas") throw new Error("Minitron does not support the macOS App Store (MAS) target");
+  if (platform !== "win32" && platform !== "linux" && platform !== "darwin") {
+    throw new Error(`Minitron supports only electron-builder win32, linux, and darwin targets; received ${String(platform)}`);
   }
 }
 
@@ -157,6 +193,16 @@ function resolveExecutable(context, appInfo) {
   if (context.electronPlatformName === "win32") {
     const name = `${requireResolvedString(appInfo.productFilename, "appInfo.productFilename")}.exe`;
     return { name, path: path.join(context.appOutDir, name), relativePath: name };
+  }
+
+  if (context.electronPlatformName === "darwin") {
+    const productFilename = requireResolvedString(appInfo.productFilename, "appInfo.productFilename");
+    const bundleName = `${productFilename}.app`;
+    return {
+      name: productFilename,
+      path: path.join(context.appOutDir, bundleName, "Contents", "MacOS", productFilename),
+      relativePath: path.join(bundleName, "Contents", "MacOS", productFilename),
+    };
   }
 
   const linuxExecutableName = requireResolvedString(context.packager.executableName, "packager.executableName");
@@ -372,7 +418,7 @@ function replaceExecutable(sourcePath, destinationPath, verifiedVersion, targetP
   const temporary = path.join(directory, `.minitron-launcher-${process.pid}-${crypto.randomUUID()}${extension}`);
   const backup = path.join(directory, `.minitron-electron-${process.pid}-${crypto.randomUUID()}${extension}`);
   fs.copyFileSync(sourcePath, temporary);
-  if (targetPlatform === "linux" && process.platform !== "win32") {
+  if ((targetPlatform === "linux" || targetPlatform === "darwin") && process.platform !== "win32") {
     const sourceMode = fs.statSync(sourcePath).mode & 0o777;
     fs.chmodSync(temporary, sourceMode | 0o111);
   }
