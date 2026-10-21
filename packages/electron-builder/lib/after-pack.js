@@ -13,6 +13,7 @@ const {
   renderConfig,
   validateManifestUrl,
   validatePublicKey,
+  validateRuntimeDownloadArtifact,
   validateStableVersion,
 } = require("./validation");
 const {
@@ -36,9 +37,17 @@ const MINIMUM_LAUNCHER_VERSIONS = {
   linux: [0, 3, 0],
   darwin: [0, 3, 0],
 };
+const MINIMUM_EMBEDDED_LAUNCHER_VERSION = [0, 4, 0];
+const BUILDER_ARCHITECTURES = new Map([
+  ["ia32", "ia32"], [0, "ia32"],
+  ["x64", "x64"], [1, "x64"],
+  ["armv7l", "armv7l"], [2, "armv7l"],
+  ["arm64", "arm64"], [3, "arm64"],
+  ["universal", "universal"], [4, "universal"],
+]);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-function createAfterPackHook(previousHook, options, spawn = spawnSync) {
+function createAfterPackHook(previousHook, options, spawn = spawnSync, resolvers = {}) {
   return async (context) => {
     assertSupportedPlatform(context.electronPlatformName);
     if (previousHook != null) {
@@ -51,7 +60,7 @@ function createAfterPackHook(previousHook, options, spawn = spawnSync) {
     if (context.electronPlatformName === "linux") {
       composeLinuxInstallerLifecycle(context, options.projectDir);
     }
-    await afterPack(context, options, spawn);
+    await afterPack(context, options, spawn, resolvers);
   };
 }
 
@@ -146,7 +155,7 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-async function afterPack(context, options, spawn = spawnSync) {
+async function afterPack(context, options, spawn = spawnSync, resolvers = {}) {
   assertSupportedPlatform(context && context.electronPlatformName);
   const packager = context && context.packager;
   if (!packager || typeof packager !== "object") {
@@ -159,10 +168,6 @@ async function afterPack(context, options, spawn = spawnSync) {
     throw new Error(`electron-builder appOutDir does not exist: ${appOutDir}`);
   }
 
-  const launcherPath = resolveFromProject(options.launcherPath, projectDir);
-  assertLauncherFile(launcherPath);
-  const launcherVersion = verifyLauncherVersion(launcherPath, spawn, context.electronPlatformName);
-
   const appInfo = packager.appInfo;
   if (!appInfo || typeof appInfo !== "object") {
     throw new Error("electron-builder did not expose resolved appInfo in afterPack context");
@@ -174,6 +179,8 @@ async function afterPack(context, options, spawn = spawnSync) {
   const allowLocalhostHttp = options.allowLocalhostHttp === undefined ? false : options.allowLocalhostHttp;
   const manifestUrl = validateManifestUrl(options.manifestUrl, allowLocalhostHttp);
   const manifestPublicKey = validatePublicKey(options.manifestPublicKey);
+  const arch = resolveTargetArchitecture(context.electronPlatformName, context.arch);
+  const requiresEmbeddedRuntime = manifestUrl === "";
   const macBundlePaths = context.electronPlatformName === "darwin"
     ? resolveMacBundlePaths(appOutDir, appInfo)
     : undefined;
@@ -198,6 +205,28 @@ async function afterPack(context, options, spawn = spawnSync) {
     throw new Error("Minitron requires electron-builder ASAR packaging; build.asar must not be false");
   }
 
+  const appAsar = path.join(resourcesDir, "app.asar");
+  if (!fs.existsSync(appAsar)) {
+    throw new Error(`Minitron requires electron-builder's standard resources/app.asar output: ${appAsar}`);
+  }
+  const launcherPath = await resolveLauncherPath(options, projectDir, context.electronPlatformName, arch, resolvers);
+  assertLauncherFile(launcherPath);
+  const requiresModernLauncher = requiresEmbeddedRuntime || options.launcherPath === undefined;
+  const launcherVersion = verifyLauncherVersion(
+    launcherPath,
+    spawn,
+    context.electronPlatformName,
+    requiresModernLauncher ? MINIMUM_EMBEDDED_LAUNCHER_VERSION : undefined,
+  );
+  const runtimeDownload = requiresEmbeddedRuntime
+    ? await resolveRuntimeDownloadArtifact(
+      options,
+      resolvers,
+      runtimeVersion,
+      context.electronPlatformName,
+      arch,
+    )
+    : undefined;
   const configText = renderConfig({
     appId,
     appVersion,
@@ -205,12 +234,8 @@ async function afterPack(context, options, spawn = spawnSync) {
     manifestUrl,
     allowLocalhostHttp,
     manifestPublicKey,
+    runtimeDownload,
   });
-
-  const appAsar = path.join(resourcesDir, "app.asar");
-  if (!fs.existsSync(appAsar)) {
-    throw new Error(`Minitron requires electron-builder's standard resources/app.asar output: ${appAsar}`);
-  }
   await patchAsar(appAsar, resourcesDir, {
     appId,
     appVersion,
@@ -363,7 +388,7 @@ function assertLauncherFile(launcherPath) {
   if (!stat.isFile()) throw new Error(`Minitron launcher must be a file: ${launcherPath}`);
 }
 
-function verifyLauncherVersion(launcherPath, spawn = spawnSync, platform = "win32") {
+function verifyLauncherVersion(launcherPath, spawn = spawnSync, platform = "win32", minimumVersionOverride) {
   const result = spawn(launcherPath, ["--version"], {
     encoding: "utf8",
     timeout: 10_000,
@@ -381,7 +406,7 @@ function verifyLauncherVersion(launcherPath, spawn = spawnSync, platform = "win3
     throw new Error(`Minitron launcher --version returned an invalid version: ${output || "<empty>"}`);
   }
   const version = match.slice(1).map(Number);
-  const minimumVersion = MINIMUM_LAUNCHER_VERSIONS[platform];
+  const minimumVersion = minimumVersionOverride || MINIMUM_LAUNCHER_VERSIONS[platform];
   if (!minimumVersion) {
     throw new Error(`Minitron has no launcher compatibility policy for ${String(platform)}`);
   }
@@ -389,6 +414,81 @@ function verifyLauncherVersion(launcherPath, spawn = spawnSync, platform = "win3
     throw new Error(`Minitron launcher ${match[1]}.${match[2]}.${match[3]} is too old; version ${minimumVersion.join(".")} or newer is required for ${platform}`);
   }
   return `${version[0]}.${version[1]}.${version[2]}`;
+}
+
+async function resolveLauncherPath(options, projectDir, platform, arch, resolvers) {
+  const launcherVersion = normalizeRequestedLauncherVersion(options.launcherVersion);
+  const launcherPath = options.launcherPath === undefined
+    ? undefined
+    : resolveFromProject(options.launcherPath, projectDir);
+  const resolver = getResolver("resolveLauncher", options, resolvers, "./launcher-download", launcherPath !== undefined);
+  if (!resolver) return launcherPath;
+  const resolved = await resolver({
+    projectDir,
+    platform,
+    arch,
+    launcherPath,
+    launcherVersion,
+  });
+  if (typeof resolved !== "string" || resolved.trim() === "") {
+    throw new Error("Minitron launcher resolver must return an absolute launcher path");
+  }
+  if (!path.isAbsolute(resolved)) {
+    throw new Error(`Minitron launcher resolver returned a non-absolute path: ${resolved}`);
+  }
+  return path.normalize(resolved);
+}
+
+async function resolveRuntimeDownloadArtifact(options, resolvers, runtimeVersion, platform, arch) {
+  const resolver = getResolver("resolveRuntimeDownload", options, resolvers, "./electron-download");
+  const result = await resolver({ version: runtimeVersion, platform, arch });
+  return validateRuntimeDownloadArtifact(result, "Minitron runtime download artifact");
+}
+
+function getResolver(name, options, resolvers, modulePath, optionalForExplicitPath = false) {
+  const injected = resolvers && resolvers[name] !== undefined
+    ? resolvers[name]
+    : options[name];
+  if (injected !== undefined) {
+    if (typeof injected !== "function") throw new TypeError(`${name} must be a function when provided`);
+    return injected;
+  }
+  let resolver;
+  try {
+    resolver = require(modulePath)[name];
+  } catch (error) {
+    if (error.code === "MODULE_NOT_FOUND" && error.message.includes(`'${modulePath}'`)) {
+      if (optionalForExplicitPath) return undefined;
+      throw new Error(`Minitron ${name} helper is unavailable; reinstall the complete minitron-builder package`);
+    }
+    throw error;
+  }
+  if (typeof resolver !== "function") throw new Error(`Minitron helper ${modulePath} does not export ${name}()`);
+  return resolver;
+}
+
+function normalizeRequestedLauncherVersion(value) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError("options.launcherVersion must be an exact stable x.y.z version when provided");
+  }
+  const normalized = value.trim().replace(/^v/i, "");
+  return validateStableVersion(normalized, "options.launcherVersion");
+}
+
+function resolveTargetArchitecture(platform, contextArch) {
+  if (platform === "darwin") return getMacArchitecture(contextArch);
+  const arch = BUILDER_ARCHITECTURES.get(contextArch);
+  if (!arch) {
+    throw new Error(`Minitron cannot resolve electron-builder target architecture: ${String(contextArch)}`);
+  }
+  if (arch === "universal") {
+    throw new Error("Minitron does not support electron-builder's universal target; build x64 and arm64 separately");
+  }
+  if (arch !== "x64") {
+    throw new Error(`Minitron ${platform} packages currently support only x64 targets; received ${arch}`);
+  }
+  return arch;
 }
 
 function compareVersions(left, right) {
@@ -1086,5 +1186,6 @@ module.exports = {
   createAfterPackHook,
   patchAsar,
   resolveRuntimeVersion,
+  resolveTargetArchitecture,
   verifyLauncherVersion,
 };

@@ -9,7 +9,8 @@ const test = require("node:test");
 const asar = require("@electron/asar");
 const pickle = require("chromium-pickle-js");
 const { withMinitron } = require("../index");
-const { afterPack, createAfterPackHook, resolveRuntimeVersion, verifyLauncherVersion } = require("../lib/after-pack");
+const { afterPack, createAfterPackHook, resolveRuntimeVersion, resolveTargetArchitecture, verifyLauncherVersion } = require("../lib/after-pack");
+const { validateRuntimeDownloadArtifact } = require("../lib/validation");
 
 const RUNTIME_VERSION = "28.3.3";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
@@ -49,6 +50,14 @@ test("withMinitron composes config without mutating existing builder hooks or NS
   assert.match(transformed, /!macro minitronUserUnInit/);
   assert.match(transformed, /!insertmacro minitronUserUnInit/);
   assert.match(wrapper, /installer\.nsh/);
+});
+
+test("withMinitron allows automatic launcher and embedded runtime resolution", (t) => {
+  const projectDir = makeTempDir();
+  t.after(() => fs.rmSync(projectDir, { recursive: true, force: true }));
+  const config = withMinitron({ projectDir }, {});
+  assert.equal(config.afterPack instanceof Function, true);
+  assert.deepEqual(config.linux.target, ["deb", "rpm"]);
 });
 
 test("withMinitron preserves explicit Linux targets and adds Linux defaults alongside global targets", (t) => {
@@ -155,8 +164,129 @@ test("launcher and runtime versions are exact and enforce the minimum launcher",
   assert.equal(verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.3.0", stderr: "" }), "linux"), "0.3.0");
   assert.equal(verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.3.0", stderr: "" }), "darwin"), "0.3.0");
   assert.throws(() => verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.2.9", stderr: "" }), "linux"), /0\.3\.0 or newer/);
+  assert.throws(() => verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.3.9", stderr: "" }), "win32", [0, 4, 0]), /0\.4\.0 or newer/);
   assert.throws(() => resolveRuntimeVersion("28.3.2", RUNTIME_VERSION), /does not match resolved Electron runtime/);
   assert.equal(resolveRuntimeVersion(undefined, RUNTIME_VERSION), RUNTIME_VERSION);
+});
+
+test("target architecture comes from electron-builder context, including cross-target macOS builds", () => {
+  assert.equal(resolveTargetArchitecture("darwin", 1), "x64");
+  assert.equal(resolveTargetArchitecture("darwin", 3), "arm64");
+  assert.equal(resolveTargetArchitecture("darwin", "arm64"), "arm64");
+  assert.equal(resolveTargetArchitecture("win32", 1), "x64");
+  assert.throws(() => resolveTargetArchitecture("linux", 3), /only x64 targets/);
+  assert.throws(() => resolveTargetArchitecture("darwin", 4), /universal target/);
+});
+
+test("embedded runtime metadata is strict and preserves the manifest compatibility path", async (t) => {
+  const fixture = await makeFixture(t);
+  const calls = [];
+  const artifact = {
+    url: "https://runtime.example.test/electron-v28.3.3-win32-x64.zip?token=abc",
+    sha256: "A".repeat(64),
+    size: 12345,
+  };
+  await afterPack(makeContext(fixture, "win32"), {
+    launcherVersion: "v0.4.0",
+    iconPath: fixture.iconPath,
+  }, (executable, args) => {
+    assert.equal(executable, fixture.launcherPath);
+    assert.deepEqual(args, ["--version"]);
+    return { status: 0, stdout: "0.4.0", stderr: "" };
+  }, {
+    resolveLauncher: async (request) => {
+      calls.push(["launcher", request]);
+      return fixture.launcherPath;
+    },
+    resolveRuntimeDownload: async (request) => {
+      calls.push(["runtime", request]);
+      return artifact;
+    },
+  });
+
+  assert.deepEqual(calls, [
+    ["launcher", {
+      projectDir: fixture.projectDir,
+      platform: "win32",
+      arch: "x64",
+      launcherPath: undefined,
+      launcherVersion: "0.4.0",
+    }],
+    ["runtime", { version: RUNTIME_VERSION, platform: "win32", arch: "x64" }],
+  ]);
+  assert.equal(fs.readFileSync(path.join(fixture.appOutDir, "minitron.toml"), "utf8"), [
+    'app_id = "com.fixture.app"',
+    'required_runtime = "28.3.3"',
+    'app_version = "1.2.3"',
+    'manifest_url = ""',
+    "allow_localhost_http = false",
+    "",
+    "[runtime_download]",
+    `url = "${artifact.url}"`,
+    `sha256 = "${"a".repeat(64)}"`,
+    "size = 12345",
+    "",
+  ].join("\n"));
+
+  assert.deepEqual(validateRuntimeDownloadArtifact(artifact), {
+    url: artifact.url,
+    sha256: "a".repeat(64),
+    size: 12345,
+  });
+  for (const invalid of [
+    { ...artifact, url: "http://runtime.example.test/file" },
+    { ...artifact, url: "https://user:password@runtime.example.test/file" },
+    { ...artifact, sha256: "f".repeat(63) },
+    { ...artifact, size: 0 },
+    { ...artifact, size: Number.MAX_SAFE_INTEGER + 1 },
+  ]) {
+    assert.throws(() => validateRuntimeDownloadArtifact(invalid));
+  }
+});
+
+test("launcher and runtime resolvers are target-specific, and explicit old launcher remains compatible with manifests", async (t) => {
+  const fixture = await makeFixture(t);
+  const calls = [];
+  const context = makeContext(fixture, "win32");
+  await afterPack(context, {
+    launcherPath: fixture.launcherPath,
+    manifestUrl: "https://updates.example.test/manifest.json",
+    iconPath: fixture.iconPath,
+  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" }), {
+    resolveLauncher: async (request) => {
+      calls.push(request);
+      return fixture.launcherPath;
+    },
+    resolveRuntimeDownload: async () => {
+      throw new Error("manifest mode must not resolve a bundled runtime");
+    },
+  });
+  assert.deepEqual(calls, [{
+    projectDir: fixture.projectDir,
+    platform: "win32",
+    arch: "x64",
+    launcherPath: fixture.launcherPath,
+    launcherVersion: undefined,
+  }]);
+});
+
+test("an explicit legacy launcher is rejected when no runtime manifest is configured", async (t) => {
+  const fixture = await makeFixture(t);
+  let runtimeResolverCalled = false;
+  await assert.rejects(afterPack(makeContext(fixture, "win32"), {
+    launcherPath: fixture.launcherPath,
+    iconPath: fixture.iconPath,
+  }, () => ({ status: 0, stdout: "0.3.9", stderr: "" }), {
+    resolveRuntimeDownload: async () => {
+      runtimeResolverCalled = true;
+      return {
+        url: "https://runtime.example.test/electron-v28.3.3-win32-x64.zip",
+        sha256: "a".repeat(64),
+        size: 12345,
+      };
+    },
+  }), /0\.4\.0 or newer/);
+  assert.equal(runtimeResolverCalled, false);
 });
 
 test("afterPack converts a Windows fixture, preserving ASAR unpacked files and user resources", async (t) => {
@@ -497,6 +627,7 @@ function makeContext(fixture, platform) {
   return {
     appOutDir: fixture.appOutDir,
     electronPlatformName: platform,
+    arch: 1,
     packager: {
       projectDir: fixture.projectDir,
       executableName: "fixture",

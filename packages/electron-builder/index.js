@@ -6,7 +6,7 @@ const { createAfterPackHook } = require("./lib/after-pack");
 
 const DEFAULT_INSTALLER_INCLUDE = path.join(__dirname, "installer.nsh");
 
-function withMinitron(config, options) {
+function withMinitron(config, options = {}) {
   if (!isRecord(config)) {
     throw new TypeError("withMinitron(config, options) requires a builder configuration object");
   }
@@ -17,8 +17,12 @@ function withMinitron(config, options) {
     throw new Error("Minitron requires electron-builder ASAR packaging; set build.asar to true or omit it");
   }
 
-  const launcherPath = requireString(options.launcherPath, "options.launcherPath");
-  const manifestUrl = requireString(options.manifestUrl, "options.manifestUrl");
+  const launcherPath = options.launcherPath === undefined
+    ? undefined
+    : requireString(options.launcherPath, "options.launcherPath");
+  const manifestUrl = options.manifestUrl === undefined
+    ? ""
+    : requireOptionalString(options.manifestUrl, "options.manifestUrl");
   const configuredProjectDir = options.projectDir === undefined ? config.projectDir : options.projectDir;
   if (configuredProjectDir !== undefined && (typeof configuredProjectDir !== "string" || configuredProjectDir.trim() === "")) {
     throw new TypeError("options.projectDir or config.projectDir must be a non-empty path when provided");
@@ -43,6 +47,7 @@ function withMinitron(config, options) {
     },
     afterPack: createAfterPackHook(config.afterPack, {
       launcherPath,
+      launcherVersion: options.launcherVersion,
       projectDir: configuredProjectDir === undefined ? undefined : projectDir,
       manifestUrl,
       allowLocalhostHttp: options.allowLocalhostHttp,
@@ -60,6 +65,13 @@ function isRecord(value) {
 function requireString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new TypeError(`${label} must be a non-empty string`);
+  }
+  return value;
+}
+
+function requireOptionalString(value, label) {
+  if (typeof value !== "string") {
+    throw new TypeError(`${label} must be a string when provided`);
   }
   return value;
 }
