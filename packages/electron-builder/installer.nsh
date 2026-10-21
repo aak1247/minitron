@@ -3,6 +3,7 @@
 ; minitronUserUnInit before including this file.
 !ifndef MINITRON_INSTALLER_NSH
 !define MINITRON_INSTALLER_NSH
+!include "TextFunc.nsh"
 
 Var /GLOBAL minitronLifecycleResult
 Var /GLOBAL minitronLifecycleOutput
