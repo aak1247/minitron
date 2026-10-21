@@ -620,13 +620,38 @@ async function launchInstallation(format, installation, systemEntry) {
       stdoutPath: installation.launchLogs.stdout, stderrPath: installation.launchLogs.stderr,
     });
   } else if (process.platform === 'linux') {
-    const child = spawn(installation.launcher, [], { cwd: installation.appDir, env: appEnvironment(installation), detached: true, stdio: 'ignore' });
+    const launchName = installation.diagnostic === peerDiagnostic ? 'peer' : 'target';
+    installation.launchAttempt = (installation.launchAttempt || 0) + 1;
+    const launchPrefix = `${format}-${launchName}-${installation.launchAttempt}`;
+    installation.launchLogs = {
+      stdout: path.join(logsDir, `${launchPrefix}.stdout.log`),
+      stderr: path.join(logsDir, `${launchPrefix}.stderr.log`),
+    };
+    await Promise.all(Object.values(installation.launchLogs).map(filename => fs.rm(filename, { force: true })));
+    const stdoutFd = fsSync.openSync(installation.launchLogs.stdout, 'w');
+    const stderrFd = fsSync.openSync(installation.launchLogs.stderr, 'w');
+    let child;
+    try {
+      child = spawn(installation.launcher, [], {
+        cwd: installation.appDir,
+        env: appEnvironment(installation),
+        detached: true,
+        stdio: ['ignore', stdoutFd, stderrFd],
+      });
+    } finally {
+      fsSync.closeSync(stdoutFd);
+      fsSync.closeSync(stderrFd);
+    }
     ownedProcesses.add(child);
-    child.once('close', () => ownedProcesses.delete(child));
+    child.once('exit', (code, signal) => {
+      installation.launchExit = { code, signal };
+      ownedProcesses.delete(child);
+    });
     child.once('error', error => { installation.launchError = error.message; ownedProcesses.delete(child); });
     installation.launchedProcess = child;
     child.unref();
     await wait(250);
+    installation.launchStartTime = child.pid ? await processStartStamp(child.pid) : null;
     if (installation.launchError) throw new Error(`Could not launch the peer fixture: ${installation.launchError}`);
   } else {
     await makeMacAppReadOnly(installation.appDir);
@@ -654,6 +679,9 @@ async function waitForDiagnostic(installation, expectedVersion) {
         const fatal = findFatalStartupError(stderr);
         if (fatal) throw new Error(`Fatal application startup output for ${installation.appDir}:\n${fatal}`);
       }
+      if (installation.launchExit && (installation.launchExit.code !== 0 || installation.launchExit.signal)) {
+        throw new Error(`Launcher exited before writing the renderer diagnostic for ${installation.appDir}: ${JSON.stringify(installation.launchExit)}`);
+      }
       try {
         const diagnostic = JSON.parse(await fs.readFile(installation.diagnostic, 'utf8'));
         return diagnostic.pid && diagnostic.renderer && diagnostic.appVersion === expectedVersion;
@@ -679,6 +707,7 @@ async function collectLaunchFailureEvidence(installation) {
       stderr: await readTail(installation.launchLogs.stderr),
     };
   }
+  if (installation.launchExit) evidence.launchExit = installation.launchExit;
   try {
     const directory = await stateDir(installation);
     evidence.stateDir = directory;
@@ -691,15 +720,34 @@ async function collectLaunchFailureEvidence(installation) {
       }
     }
     const record = evidence.stateFiles['process.json'];
-    const pids = [...new Set([record?.ownerPid, record?.childPid].map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0))];
+    const launchedPid = installation.launchedProcess?.pid && installation.launchStartTime
+      && await processStartStamp(installation.launchedProcess.pid) === installation.launchStartTime
+      ? installation.launchedProcess.pid
+      : null;
+    const pids = [...new Set([record?.ownerPid, record?.childPid, launchedPid].map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0))];
     if (pids.length) {
       try {
-        const result = await runCommand('ps', ['-p', pids.join(','), '-o', 'pid=,ppid=,stat=,command='], {
+        const result = await runCommand('ps', ['-eo', 'pid=,ppid=,stat=,command='], {
           timeout: 15_000,
           label: `diagnostic-processes-${safeName(path.basename(installation.appDir))}`,
         });
         const installPath = path.resolve(installation.appDir);
-        evidence.processes = result.stdout.split(/\r?\n/).map(line => line.trim()).filter(line => line && line.includes(installPath));
+        const rows = result.stdout.split(/\r?\n/).flatMap(line => {
+          const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+          return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), stat: match[3], command: match[4] }] : [];
+        });
+        const descendants = new Set(pids);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const row of rows) if (descendants.has(row.ppid) && !descendants.has(row.pid)) {
+            descendants.add(row.pid);
+            changed = true;
+          }
+        }
+        evidence.processes = rows
+          .filter(row => descendants.has(row.pid) && row.command.includes(installPath))
+          .map(row => `${row.pid} ${row.ppid} ${row.stat} ${row.command}`);
       } catch (error) {
         evidence.processesError = error.message;
       }
