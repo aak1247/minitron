@@ -17,16 +17,16 @@ Available for **Windows x64, Linux x64, and macOS Intel / Apple Silicon**. Elect
 
 ## Package size
 
-v0.2.0, using the included example and Electron 32.2.0. Downloads are compressed; other columns show uncompressed file sizes.
+v0.3.0, using the included example and Electron 32.2.0. Downloads are compressed; other columns show uncompressed file sizes.
 
 | Platform | Launcher download | Launcher | Example app | Electron runtime |
 |---|---:|---:|---:|---:|
-| Windows x64 | [5.20 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-windows-x64.zip) | 9.66 MiB | 9.67 MiB | 264.74 MiB |
-| Linux x64 | [6.51 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-linux-x64.tar.gz) | 13.23 MiB | 13.24 MiB | 264.98 MiB |
-| macOS Intel | [5.26 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-macos-x64.tar.gz) | 9.64 MiB | 9.65 MiB | 246.06 MiB |
-| macOS Apple Silicon | [5.09 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-macos-arm64.tar.gz) | 8.41 MiB | 8.41 MiB | 239.90 MiB |
+| Windows x64 | [5.20 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-windows-x64.zip) | 9.67 MiB | 9.68 MiB | 264.74 MiB |
+| Linux x64 | [6.53 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-linux-x64.tar.gz) | 13.27 MiB | 13.27 MiB | 264.98 MiB |
+| macOS Intel | [5.31 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-macos-x64.tar.gz) | 9.74 MiB | 9.75 MiB | 246.06 MiB |
+| macOS Apple Silicon | [5.14 MiB](https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-v0.3.0-macos-arm64.tar.gz) | 8.47 MiB | 8.48 MiB | 239.90 MiB |
 
-The example app includes the launcher, configuration and app resources; its shared runtime is separate. The example app update ZIP is **7.88 KiB**. Exact byte counts are available in [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.2.0/sizes.json).
+The example app includes the launcher, configuration and app resources; its shared runtime is separate. The example app update ZIP is **8.22 KiB**. Exact byte counts are available in [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.3.0/sizes.json).
 
 Karvis AI 2.0.0 on Windows (Electron 28.3.3, NSIS): **77.34 MiB → 10.56 MiB**, about **86% smaller**. The shared runtime is separate and downloads once on first launch.
 
@@ -58,7 +58,7 @@ sh /tmp/minitron-install.sh --dir ./minitron-bin
 ./minitron-bin/minitron --help
 ```
 
-The scripts select the native binary and check its SHA-256 checksum. Use `-Version v0.2.0` on Windows or `--version v0.2.0` on Linux/macOS to select a release. Existing app configuration and resources are preserved.
+The scripts select the native binary and check its SHA-256 checksum. Use `-Version v0.3.0` on Windows or `--version v0.3.0` on Linux/macOS to select a release. Existing app configuration and resources are preserved.
 
 Linux requires a desktop environment with glibc 2.35+, fontconfig, X11 or Wayland, and xkbcommon. On Ubuntu 22.04+, install the launcher dependencies with `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6`. Electron also needs GTK3, notifications, NSS, audio and GBM desktop libraries; on Ubuntu 22.04, install `libgtk-3-0 libnotify4 libnss3 libasound2 libgbm1`.
 
