@@ -59,6 +59,7 @@ const packageName = `minitron-karvis-e2e-${runId.replace(/[^a-z0-9]/gi, '').toLo
 const runtimePlatform = `${process.platform}-${process.arch}`;
 const diagnosticsDir = path.join(work, 'diagnostics');
 const markersDir = path.join(work, 'markers');
+const linuxUpgradePidFile = path.join(markersDir, 'linux-upgrade-old-target.pid');
 const logsDir = path.join(work, 'logs');
 const peerRoot = path.join(work, 'installed', 'peer');
 const peerAppDir = process.platform === 'linux'
@@ -286,7 +287,15 @@ async function runScenario({ format, scenario, version200, version201, peerAppDi
   await step(`${format}: upgrade the running target to 2.0.1 while the peer stays alive`, async () => {
     setManifests('2.0.1');
     const oldTargetIdentity = scenario.targetProcess;
-    await upgradePackage(format, version201, scenario, target);
+    if (isLinux) {
+      assert(await processIdentityAlive(oldTargetIdentity), 'Cannot record an old target PID that is no longer running');
+      await fs.writeFile(linuxUpgradePidFile, `${oldTargetIdentity.pid}\n`, { mode: 0o600 });
+    }
+    try {
+      await upgradePackage(format, version201, scenario, target);
+    } finally {
+      if (isLinux) await fs.rm(linuxUpgradePidFile, { force: true });
+    }
     await waitFor(async () => !(await processIdentityAlive(oldTargetIdentity)), `${format} upgrade did not stop the old target process`, 30_000);
     await assertInstalledApp(target, '2.0.1');
     await launchInstallation(format, target, true);
@@ -358,7 +367,21 @@ async function buildVersion(settings) {
     hooks.afterInstall = path.join(scriptsDir, `${version}-after-install.sh`);
     hooks.afterRemove = path.join(scriptsDir, `${version}-after-remove.sh`);
     const versionTag = version === '2.0.0' ? 'install-200' : 'install-201';
-    await writeHook(hooks.afterInstall, path.join(markersDir, `${versionTag}-after-install.log`), `${version} afterInstall`);
+    const afterInstallMarker = path.join(markersDir, `${versionTag}-after-install.log`);
+    const upgradeGuard = version === '2.0.1'
+      ? [
+        `if [ -f ${shellQuote(linuxUpgradePidFile)} ]; then`,
+        `  old_pid=$(cat ${shellQuote(linuxUpgradePidFile)})`,
+        `  case "$old_pid" in ''|*[!0-9]*) printf '%s\\n' 'invalid recorded target PID' >&2; exit 1;; esac`,
+        `  if kill -0 "$old_pid" 2>/dev/null; then`,
+        `    printf 'old target process %s is still running before afterInstall\\n' "$old_pid" >&2`,
+        '    exit 1',
+        '  fi',
+        `  printf 'old-target-stopped:%s\\n' "$old_pid" >> ${shellQuote(afterInstallMarker)}`,
+        'fi',
+      ].join('\n')
+      : '';
+    await writeHook(hooks.afterInstall, afterInstallMarker, `${version} afterInstall`, upgradeGuard);
     await writeHook(hooks.afterRemove, path.join(markersDir, `${versionTag}-after-remove.log`), `${version} afterRemove`);
   }
   const buildResources = path.join(projectCopy, 'e2e-build-resources');
@@ -569,7 +592,7 @@ async function upgradePackage(format, build, scenario, target) {
     if (format === 'deb') await runCommand('sudo', ['-n', 'apt-get', 'install', '-y', build.packages.deb], { timeout: 5 * 60_000, label: 'apt-upgrade-2.0.1' });
     else await runCommand('sudo', ['-n', 'rpm', '-U', '--replacepkgs', '--nodeps', build.packages.rpm], { timeout: 5 * 60_000, label: 'rpm-upgrade-2.0.1' });
     await verifyLinuxPackageVersion(format, '2.0.1');
-    await verifyLinuxInstalledHooks('2.0.1');
+    await verifyLinuxInstalledHooks('2.0.1', scenario.targetProcess.pid);
   } else if (format === 'pkg') {
     await runCommand('sudo', ['-n', 'installer', '-pkg', build.packages.pkg, '-target', '/'], { timeout: 10 * 60_000, label: 'pkg-upgrade-2.0.1' });
     await verifyPkgHook('postinstall', '2.0.1');
@@ -1005,11 +1028,13 @@ async function verifyLinuxPackageVersion(format, expected) {
   }
 }
 
-async function verifyLinuxInstalledHooks(version) {
+async function verifyLinuxInstalledHooks(version, expectedStoppedPid) {
   const suffix = version === '2.0.0' ? 'install-200' : 'install-201';
   const marker = path.join(markersDir, `${suffix}-after-install.log`);
   await waitFor(() => exists(marker), `electron-builder afterInstall did not run for ${version}`, 30_000);
-  assert.match(await fs.readFile(marker, 'utf8'), new RegExp(version.replaceAll('.', '\\.')));
+  const contents = await fs.readFile(marker, 'utf8');
+  assert.match(contents, new RegExp(version.replaceAll('.', '\\.')));
+  if (version === '2.0.1') assert(contents.includes(`old-target-stopped:${expectedStoppedPid}`), 'Linux afterInstall did not verify that the old target process had exited before writing its marker');
 }
 
 async function verifyLinuxAfterRemoveHooks(format) {
@@ -1147,8 +1172,8 @@ async function injectDiagnostics(mainPath) {
   await fs.writeFile(mainPath, prefix + source);
 }
 
-async function writeHook(filename, markerPath, text) {
-  const content = `#!/bin/sh\nset -eu\nprintf '%s\\n' ${shellQuote(text)} >> ${shellQuote(markerPath)}\n`;
+async function writeHook(filename, markerPath, text, beforeMarker = '') {
+  const content = `#!/bin/sh\nset -eu\n${beforeMarker ? `${beforeMarker}\n` : ''}printf '%s\\n' ${shellQuote(text)} >> ${shellQuote(markerPath)}\n`;
   await fs.writeFile(filename, content, { mode: 0o755 });
   await fs.chmod(filename, 0o755);
 }
