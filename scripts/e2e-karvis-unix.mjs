@@ -337,6 +337,7 @@ async function buildVersion(settings) {
   pkg.name = packageName;
   pkg.productName = productName;
   pkg.version = version;
+  if (!pkg.homepage) pkg.homepage = 'https://example.invalid/karvis-e2e';
   delete pkg.build;
   await fs.writeFile(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
   const mainPath = path.join(projectCopy, 'dist', 'main', 'index.js');
@@ -465,7 +466,13 @@ async function runCommand(executable, args, settings = {}) {
   let timedOut = false;
   const env = { ...process.env, ...(settings.env || {}) };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(executable, args, { cwd: settings.cwd || work, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+  const captureOutput = settings.captureOutput !== false;
+  const child = spawn(executable, args, {
+    cwd: settings.cwd || work,
+    env,
+    detached: process.platform !== 'win32',
+    stdio: captureOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore',
+  });
   ownedProcesses.add(child);
   const append = (stream, chunk) => {
     const text = chunk.toString();
@@ -474,8 +481,10 @@ async function runCommand(executable, args, settings = {}) {
     else stderr = (stderr + text).slice(-40_000);
     log.write(`${stream}: ${text}`);
   };
-  child.stdout.on('data', chunk => append('stdout', chunk));
-  child.stderr.on('data', chunk => append('stderr', chunk));
+  if (captureOutput) {
+    child.stdout.on('data', chunk => append('stdout', chunk));
+    child.stderr.on('data', chunk => append('stderr', chunk));
+  }
   const timer = setTimeout(() => {
     timedOut = true;
     try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, 'SIGTERM'); } catch {}
@@ -485,7 +494,7 @@ async function runCommand(executable, args, settings = {}) {
   try {
     close = await new Promise((resolve, reject) => {
       child.once('error', reject);
-      child.once('close', (code, signal) => resolve({ code, signal }));
+      child.once(captureOutput ? 'close' : 'exit', (code, signal) => resolve({ code, signal }));
     });
   } finally {
     clearTimeout(timer);
@@ -580,7 +589,7 @@ async function launchInstallation(format, installation, systemEntry) {
     const desktop = await findDesktopEntry(executableName);
     assert(await fs.readFile(desktop, 'utf8').then(text => text.includes(productName)), 'Installed desktop entry does not identify Karvis AI');
     installation.desktopEntry = desktop;
-    await runCommand('gio', ['launch', desktop], { env: appEnvironment(installation), timeout: 30_000, label: `gio-launch-${format}` });
+    await runCommand('gio', ['launch', desktop], { env: appEnvironment(installation), timeout: 30_000, label: `gio-launch-${format}`, captureOutput: false });
   } else if (process.platform === 'linux') {
     const child = spawn(installation.launcher, [], { cwd: installation.appDir, env: appEnvironment(installation), detached: true, stdio: 'ignore' });
     ownedProcesses.add(child);
@@ -592,7 +601,7 @@ async function launchInstallation(format, installation, systemEntry) {
     if (installation.launchError) throw new Error(`Could not launch the peer fixture: ${installation.launchError}`);
   } else {
     await makeMacAppReadOnly(installation.appDir);
-    await runCommand('open', ['-n', '-a', installation.appDir], { env: appEnvironment(installation), timeout: 30_000, label: `open-${format}` });
+    await runCommand('open', ['-n', '-a', installation.appDir], { env: appEnvironment(installation), timeout: 30_000, label: `open-${format}`, captureOutput: false });
   }
 }
 
