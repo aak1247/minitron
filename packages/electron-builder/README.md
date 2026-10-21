@@ -58,4 +58,4 @@ For portable app directories or manual launcher installation, see the [packaging
 - Linux x64: DEB and RPM. AppImage and Snap are not supported by the installer integration.
 - macOS: DMG and PKG. Build x64 and arm64 separately; Universal and Mac App Store targets are not supported.
 
-The CLI selects the matching launcher automatically. Linux/macOS require launcher v0.3.0 or newer; Windows requires v0.2.0 or newer. The lower-level `withMinitron` API is documented in the [adapter example](../../examples/electron-builder/README.md#low-level-adapter).
+The CLI selects the matching launcher automatically and requires launcher v0.4.0 or newer on all platforms. The lower-level `withMinitron` API is documented in the [adapter example](../../examples/electron-builder/README.md#low-level-adapter).
