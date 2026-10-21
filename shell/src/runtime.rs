@@ -890,6 +890,8 @@ fn create_macos_branded_helper(
     let source_plist = std::fs::read_to_string(&source_info)
         .with_context(|| format!("read Electron helper plist {}", source_info.display()))?;
     let source_executable = source_macos_helper_executable(source_bundle, &source_plist)?;
+    let source_executable_path = source_contents.join("MacOS").join(&source_executable);
+    let source_executable_hash = sha256_file(&source_executable_path)?;
     let executable_name = format!("{helper_bundle_name}{suffix}");
     let mut branded_plist = source_plist;
     branded_plist = set_plist_string_value(&branded_plist, "CFBundleExecutable", &executable_name)?;
@@ -904,6 +906,11 @@ fn create_macos_branded_helper(
         &macos_helper_bundle_identifier(bundle_identifier, suffix, login_helper),
     )?;
     branded_plist = set_plist_string_value(&branded_plist, "CFBundleVersion", bundle_version)?;
+    branded_plist = set_plist_string_value(
+        &branded_plist,
+        "MinitronSourceExecutableSHA256",
+        &source_executable_hash,
+    )?;
 
     let destination_contents = destination_bundle.join("Contents");
     let destination_macos = destination_contents.join("MacOS");
@@ -1046,6 +1053,11 @@ fn macos_host_helper_layout_matches(
                     return Ok(false);
                 }
                 std::ffi::OsString::from(branded_name)
+            } else if name_text == "Electron Framework.framework" {
+                if !macos_hardlinked_framework_matches(&source, &host_frameworks.join(&name))? {
+                    return Ok(false);
+                }
+                name
             } else {
                 let destination = host_frameworks.join(&name);
                 if std::fs::read_link(&destination).ok().as_deref() != Some(source.as_path()) {
@@ -1121,6 +1133,8 @@ fn macos_branded_helper_matches(
         Ok(executable) => executable,
         Err(_) => return Ok(false),
     };
+    let source_executable_path = source_contents.join("MacOS").join(&source_executable);
+    let source_executable_hash = sha256_file(&source_executable_path)?;
     let executable_name = format!("{helper_bundle_name}{suffix}");
     let expected_plist =
         set_plist_string_value(&source_plist, "CFBundleExecutable", &executable_name)?;
@@ -1136,6 +1150,13 @@ fn macos_branded_helper_matches(
     )?;
     let expected_plist =
         set_plist_string_value(&expected_plist, "CFBundleVersion", bundle_version)?;
+    // Ad-hoc signing changes the copied Mach-O's bytes. Attest the source bytes
+    // in the signed plist, then verify the destination bundle signature below.
+    let expected_plist = set_plist_string_value(
+        &expected_plist,
+        "MinitronSourceExecutableSHA256",
+        &source_executable_hash,
+    )?;
     let destination_contents = destination_bundle.join("Contents");
     if std::fs::read(destination_contents.join("Info.plist"))
         .ok()
@@ -1144,11 +1165,9 @@ fn macos_branded_helper_matches(
     {
         return Ok(false);
     }
-    let source_executable_path = source_contents.join("MacOS").join(&source_executable);
     let destination_executable_path = destination_contents.join("MacOS").join(&executable_name);
     if !std::fs::symlink_metadata(&destination_executable_path)
         .is_ok_and(|metadata| metadata.file_type().is_file())
-        || sha256_file(&source_executable_path)? != sha256_file(&destination_executable_path)?
     {
         return Ok(false);
     }
@@ -2215,6 +2234,8 @@ mod tests {
         let branded =
             set_plist_string_value(&branded, "CFBundleIdentifier", "com.karvis.helper").unwrap();
         let branded = set_plist_string_value(&branded, "CFBundleVersion", "2.0.0").unwrap();
+        let branded =
+            set_plist_string_value(&branded, "MinitronSourceExecutableSHA256", "abc123").unwrap();
         assert_eq!(
             plist_string_value(&branded, "CFBundleExecutable").as_deref(),
             Some("Karvis AI Helper")
@@ -2230,6 +2251,10 @@ mod tests {
         assert_eq!(
             plist_string_value(&branded, "CFBundleVersion").as_deref(),
             Some("2.0.0")
+        );
+        assert_eq!(
+            plist_string_value(&branded, "MinitronSourceExecutableSHA256").as_deref(),
+            Some("abc123")
         );
         assert!(branded.contains("<key>UnknownRuntimeField</key><string>preserve-me</string>"));
         std::fs::remove_dir_all(root).unwrap();
