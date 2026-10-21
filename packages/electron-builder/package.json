@@ -23,7 +23,10 @@
     "chromium-pickle-js": "^0.2.0",
     "electron-builder": "24.13.3",
     "yauzl": "3.4.0",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "app-builder-lib": "24.13.3",
+    "builder-util": "24.13.1",
+    "read-config-file": "6.3.2"
   },
   "files": [
     "index.js",
