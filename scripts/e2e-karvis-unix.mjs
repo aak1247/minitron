@@ -338,6 +338,7 @@ async function buildVersion(settings) {
   pkg.productName = productName;
   pkg.version = version;
   if (!pkg.homepage) pkg.homepage = 'https://example.invalid/karvis-e2e';
+  pkg.author = { name: 'Karvis installer E2E', email: 'test@example.invalid' };
   delete pkg.build;
   await fs.writeFile(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
   const mainPath = path.join(projectCopy, 'dist', 'main', 'index.js');
