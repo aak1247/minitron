@@ -697,6 +697,7 @@ async function launchInstallation(format, installation, systemEntry) {
       stderr: path.join(logsDir, `${launchPrefix}.stderr.log`),
     };
     await Promise.all(Object.values(installation.launchLogs).map(filename => fs.rm(filename, { force: true })));
+    installation.launchStartedAt = Date.now();
     try {
       await runCommand('open', [
         '--stdout', installation.launchLogs.stdout,
@@ -806,6 +807,7 @@ async function collectLaunchFailureEvidence(installation) {
       stderr: await readTail(installation.launchLogs.stderr),
     };
   }
+  evidence.rendererProcessEvents = await readTail(`${installation.diagnostic}.events.jsonl`, 16_000);
   if (installation.launchExit) evidence.launchExit = installation.launchExit;
   try {
     const directory = await stateDir(installation);
@@ -819,6 +821,12 @@ async function collectLaunchFailureEvidence(installation) {
       }
     }
     const record = evidence.stateFiles['process.json'];
+    if (process.platform === 'darwin') {
+      evidence.hostBundles = [...new Set([
+        ...(evidence.hostBundles || []),
+        ...await listMacHostBundles(directory),
+      ])];
+    }
     const launchedPid = installation.launchedProcess?.pid && installation.launchStartTime
       && await processStartStamp(installation.launchedProcess.pid) === installation.launchStartTime
       ? installation.launchedProcess.pid
@@ -826,11 +834,10 @@ async function collectLaunchFailureEvidence(installation) {
     const pids = [...new Set([record?.ownerPid, record?.childPid, launchedPid].map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0))];
     if (pids.length) {
       try {
-        const result = await runCommand('ps', ['-eo', 'pid=,ppid=,stat=,command='], {
+        const result = await runCommand('ps', ['-ww', '-eo', 'pid=,ppid=,stat=,command='], {
           timeout: 15_000,
           label: `diagnostic-processes-${safeName(path.basename(installation.appDir))}`,
         });
-        const installPath = path.resolve(installation.appDir);
         const rows = result.stdout.split(/\r?\n/).flatMap(line => {
           const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
           return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), stat: match[3], command: match[4] }] : [];
@@ -844,9 +851,17 @@ async function collectLaunchFailureEvidence(installation) {
             changed = true;
           }
         }
-        evidence.processes = rows
-          .filter(row => descendants.has(row.pid) && row.command.includes(installPath))
+        const ownedRows = rows.filter(row => descendants.has(row.pid));
+        evidence.ownedProcessCount = ownedRows.length;
+        evidence.processes = ownedRows.slice(0, 200)
           .map(row => `${row.pid} ${row.ppid} ${row.stat} ${row.command}`);
+        evidence.ownedProcessTree = ownedRows.slice(0, 200);
+        if (process.platform === 'darwin') {
+          evidence.hostBundles = [...new Set([
+            ...(evidence.hostBundles || []),
+            ...ownedRows.map(row => macHostBundleFromCommand(row.command)).filter(Boolean),
+          ])];
+        }
       } catch (error) {
         evidence.processesError = error.message;
       }
@@ -854,7 +869,102 @@ async function collectLaunchFailureEvidence(installation) {
   } catch (error) {
     evidence.stateError = error.message;
   }
+  if (process.platform === 'darwin') {
+    evidence.macosDiagnosticReports = await collectMacDiagnosticReports(installation, evidence.hostBundles || []);
+  }
   return evidence;
+}
+
+function macHostBundleFromCommand(command) {
+  const hostsIndex = command.indexOf('/updates/mac-hosts/');
+  if (hostsIndex < 0) return null;
+  const appEnd = command.indexOf('.app', hostsIndex);
+  if (appEnd < 0) return null;
+  return command.slice(0, appEnd + '.app'.length);
+}
+
+async function collectMacDiagnosticReports(installation, hostBundles) {
+  const roots = [
+    path.join(os.homedir(), 'Library', 'Logs', 'DiagnosticReports'),
+    '/Library/Logs/DiagnosticReports',
+  ];
+  const cutoff = (installation.launchStartedAt || Date.now() - 10 * 60_000) - 2 * 60_000;
+  const candidates = [];
+  for (const root of roots) {
+    let entries;
+    try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.(?:ips|crash)$/i.test(entry.name)) continue;
+      const filename = path.join(root, entry.name);
+      try {
+        const stat = await fs.stat(filename);
+        if (stat.mtimeMs >= cutoff) candidates.push({ filename, name: entry.name, modifiedAt: stat.mtime.toISOString(), size: stat.size, mtimeMs: stat.mtimeMs });
+      } catch {}
+    }
+  }
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const needles = [installation.appDir, ...hostBundles, targetAppId].filter(Boolean);
+  for (const filename of [installation.appDir, ...hostBundles]) {
+    try { needles.push(await fs.realpath(filename)); } catch {}
+  }
+  const reports = [];
+  for (const candidate of candidates.slice(0, 40)) {
+    const reportContent = await readDiagnosticReport(candidate.filename);
+    const matchBy = needles.filter(needle => needle && reportContent.text.includes(needle));
+    if (matchBy.length === 0) continue;
+    if (/karvis/i.test(candidate.name)) matchBy.push('filename');
+    reports.push({
+      filename: candidate.filename,
+      modifiedAt: candidate.modifiedAt,
+      size: candidate.size,
+      matchedBy: [...new Set(matchBy)],
+      excerpt: boundedDiagnosticExcerpt(reportContent.text),
+    });
+    if (reports.length >= 5) break;
+  }
+  return { roots, scannedRecentReports: Math.min(candidates.length, 40), reports };
+}
+
+async function listMacHostBundles(stateDirectory) {
+  const hostsDirectory = path.join(stateDirectory, 'mac-hosts');
+  const results = [];
+  let hostEntries;
+  try { hostEntries = await fs.readdir(hostsDirectory, { withFileTypes: true }); } catch { return results; }
+  for (const hostEntry of hostEntries) {
+    if (!hostEntry.isDirectory()) continue;
+    const hostRoot = path.join(hostsDirectory, hostEntry.name);
+    let appEntries;
+    try { appEntries = await fs.readdir(hostRoot, { withFileTypes: true }); } catch { continue; }
+    for (const appEntry of appEntries) {
+      if (appEntry.isDirectory() && appEntry.name.endsWith('.app')) results.push(path.join(hostRoot, appEntry.name));
+    }
+  }
+  return results;
+}
+
+async function readDiagnosticReport(filename, maximumBytes = 2 * 1024 * 1024) {
+  let handle;
+  try {
+    handle = await fs.open(filename, 'r');
+    const stat = await handle.stat();
+    const firstLength = Math.min(stat.size, Math.ceil(maximumBytes / 2));
+    const first = Buffer.alloc(firstLength);
+    await handle.read(first, 0, firstLength, 0);
+    const tailLength = Math.min(Math.max(0, stat.size - firstLength), Math.floor(maximumBytes / 2));
+    const tail = Buffer.alloc(tailLength);
+    if (tailLength) await handle.read(tail, 0, tailLength, stat.size - tailLength);
+    return { text: first.toString('utf8') + (tailLength ? `\n...[middle omitted]...\n${tail.toString('utf8')}` : '') };
+  } catch (error) {
+    return { text: `[could not read diagnostic report ${filename}: ${error.message}]` };
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function boundedDiagnosticExcerpt(text, maximumCharacters = 12_000) {
+  if (text.length <= maximumCharacters) return text;
+  const half = Math.floor(maximumCharacters / 2);
+  return `${text.slice(0, half)}\n...[excerpt truncated]...\n${text.slice(-half)}`;
 }
 
 async function readTail(filename, maxBytes = 24_000) {
@@ -1154,10 +1264,14 @@ async function injectDiagnostics(mainPath) {
     '  let resourceDir = null; try { if (process.env.MINITRON_RESOURCES_DIR) resourceDir = fs.realpathSync(process.env.MINITRON_RESOURCES_DIR); } catch (_) {}',
     '  const isPeer = !!resourceDir && resourceDir.startsWith(peerRoot + path.sep);',
     `  const requestedUserData = process.env.KARVIS_E2E_USER_DATA || (isPeer ? ${JSON.stringify(peerUserData)} : ${JSON.stringify(targetUserData)});`,
+    `  const diagnosticPath = process.env.KARVIS_E2E_DIAGNOSTIC_FILE || (isPeer ? ${JSON.stringify(peerDiagnostic)} : ${JSON.stringify(targetDiagnostic)});`,
+    '  const eventPath = diagnosticPath + ".events.jsonl";',
+    '  const writeProcessEvent = (event, details) => { try { fs.mkdirSync(path.dirname(eventPath), { recursive: true }); fs.appendFileSync(eventPath, JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid, event, details }) + "\\n"); } catch (_) {} };',
+    '  app.on("child-process-gone", (_event, details) => writeProcessEvent("child-process-gone", details));',
     '  if (requestedUserData) { fs.mkdirSync(requestedUserData, { recursive: true }); app.setPath("userData", path.resolve(requestedUserData)); }',
     '  app.on("browser-window-created", (_event, window) => {',
+    '    window.webContents.on("render-process-gone", (_goneEvent, details) => writeProcessEvent("render-process-gone", { title: window.getTitle(), details }));',
     '    window.webContents.once("did-finish-load", async () => {',
-    `      const diagnosticPath = process.env.KARVIS_E2E_DIAGNOSTIC_FILE || (isPeer ? ${JSON.stringify(peerDiagnostic)} : ${JSON.stringify(targetDiagnostic)});`,
     '      let renderer = null; let rendererError = null;',
     `      try { renderer = await window.webContents.executeJavaScript(${JSON.stringify(rendererExpression)}, true); } catch (error) { rendererError = String(error); }`,
     '      const value = { timestamp: new Date().toISOString(), pid: process.pid, electronVersion: process.versions.electron || null, appVersion: app.getVersion(), appName: app.getName(), appId: process.env.MINITRON_APP_ID || null, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, userData: app.getPath("userData"), windowTitle: window.getTitle(), renderer, rendererError };',
