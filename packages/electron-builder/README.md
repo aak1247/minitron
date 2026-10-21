@@ -53,7 +53,7 @@ module.exports = withMinitron(
 
 Minitron requires ASAR packaging. `iconPath` is a PNG included in app resources; if omitted, the adapter looks for a PNG among the configured application icons. Configure an app icon for macOS and a Linux PNG/icon set; electron-builder can generate the macOS icon from a PNG. Linux DEB/RPM builds need a real maintainer email in `MINITRON_MAINTAINER` or `linux.maintainer`, such as `Your Name <you@company.com>`.
 
-Linux DEB/RPM metadata also needs the app's homepage URL. electron-builder reads `homepage` from the app's `package.json` or can infer it from the Git origin; builds from snapshots without `.git` must set `homepage` explicitly.
+Linux DEB/RPM packages need a homepage URL. Set `homepage` in the app's `package.json`, or let electron-builder infer it from the Git origin.
 
 `withMinitron` preserves your existing `afterPack` hook and runs it before Minitron conversion. It retains NSIS options and composes the NSIS lifecycle include. Linux DEB/RPM keeps configured `afterInstall` and `afterRemove` scripts and adds a before-remove hook. PKG builds retain user scripts and add an app-stop step before replacing the installed bundle.
 
@@ -81,6 +81,6 @@ In a packaged app, `process.execPath` identifies the shared Electron runtime. Us
 
 ## 简体中文
 
-适配器保留现有 electron-builder 配置，并将打包后的 Electron 主程序替换为 Minitron 启动器。支持 Windows NSIS、Linux DEB/RPM，以及 macOS DMG/PKG。Linux 不支持 AppImage 或 Snap；macOS x64 与 arm64 必须分别打包，不能使用 universal 或 Mac App Store 目标。Linux/macOS 启动器最低为 v0.3.0，Windows 最低为 v0.2.0。Linux DEB/RPM 还需要应用 homepage；electron-builder 会读取 `package.json` 的 `homepage`，或尝试从 Git origin 推断。没有 `.git` 的快照构建需要显式设置 `homepage`。
+适配器保留现有 electron-builder 配置，并将打包后的 Electron 主程序替换为 Minitron 启动器。支持 Windows NSIS、Linux DEB/RPM，以及 macOS DMG/PKG。Linux 不支持 AppImage 或 Snap；macOS x64 与 arm64 必须分别打包，不能使用 universal 或 Mac App Store 目标。Linux/macOS 启动器最低为 v0.3.0，Windows 最低为 v0.2.0。Linux DEB/RPM 还需要应用 homepage；electron-builder 会读取 `package.json` 的 `homepage`，或尝试从 Git origin 推断。可在应用 `package.json` 中设置 `homepage`。
 
 安装启动器和平台操作见[通用配置示例](../../examples/electron-builder/README.zh-CN.md)与[Karvis 示例](../../examples/karvis/README.zh-CN.md)。macOS 卸载前需手动运行 `.app/Contents/Resources/minitron-uninstall.command`；将应用拖进废纸篓不会自动运行该脚本。

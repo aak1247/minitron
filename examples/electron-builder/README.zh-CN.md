@@ -14,7 +14,7 @@ npm install --save-dev electron-builder@24.13.3 https://github.com/aak1247/minit
 
 配置包含 Windows NSIS、Linux DEB/RPM 和 macOS DMG/PKG。Linux 打包必须提供真实维护者邮箱，例如 `MINITRON_MAINTAINER="你的名字 <you@company.com>"`；Windows 和 macOS 构建不需要此变量。
 
-Linux DEB/RPM 元数据还需要应用 homepage。electron-builder 会读取应用 `package.json` 中的 `homepage`，也可尝试从 Git origin 推断；从不含 `.git` 的快照构建时，需要显式设置 `homepage`。
+Linux DEB/RPM 包还需要主页 URL。请在应用的 `package.json` 中设置 `homepage`，或由 electron-builder 从 Git origin 推断。
 
 在应用 `package.json` 中添加命令：
 

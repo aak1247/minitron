@@ -58,7 +58,7 @@ Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcom
 
 ### electron-builder
 
-使用 [Minitron 适配器](packages/electron-builder/README.md)包装现有 electron-builder 配置，可生成 Windows NSIS、Linux DEB/RPM 和 macOS DMG/PKG 安装包。Linux 不支持 AppImage/Snap；macOS x64 和 arm64 需分别构建，不支持 universal 或 Mac App Store 目标。Linux DEB/RPM 还需要应用 homepage，electron-builder 会从 `package.json` 读取或尝试从 Git origin 推断；没有 `.git` 的快照需要显式设置。日常 Electron 和 Node.js 开发流程保持不变。
+通过 [Minitron 适配器](packages/electron-builder/README.md)包装现有 electron-builder 配置，可生成 Windows NSIS、Linux DEB/RPM 和 macOS DMG/PKG 安装包，保留应用名称、图标和系统入口。日常 Electron 和 Node.js 开发流程保持不变。
 
 参见[通用 electron-builder 配置](examples/electron-builder/README.zh-CN.md)和[Karvis 接入示例](examples/karvis/README.zh-CN.md)。macOS 应用包含手动运行的 `minitron-uninstall.command`；将应用拖入废纸篓不会自动执行该脚本。
 

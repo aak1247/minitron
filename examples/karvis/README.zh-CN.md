@@ -30,7 +30,7 @@ export MINITRON_MAINTAINER="你的名字 <you@company.com>"
 npx electron-builder --config electron-builder.config.cjs --linux --x64
 ```
 
-Linux 包元数据还需要 Karvis 的 homepage。普通 checkout 中 electron-builder 可以从 Git origin 推断；Karvis snapshot 不含 `.git`，因此从 snapshot 构建时请在 `karvis-electron/package.json` 中显式设置正确的 `homepage`。
+Linux DEB/RPM 包还需要主页 URL。请在应用的 `package.json` 中设置 `homepage`，或由 electron-builder 从 Git origin 推断。
 
 Debian 使用 `sudo apt install ./release/*.deb` 安装，RPM 使用 `sudo dnf install ./release/*.rpm`。包管理器升级会停止旧应用并保留运行时登记；使用 `sudo apt remove <软件包名>` 或 `sudo dnf remove <软件包名>` 卸载时会停止应用并注销登记。
 

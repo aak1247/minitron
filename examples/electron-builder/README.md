@@ -14,7 +14,7 @@ Install the matching Minitron launcher with the [platform install script](../../
 
 The config selects Windows NSIS, Linux DEB/RPM, and macOS DMG/PKG. For Linux, set `MINITRON_MAINTAINER` to an actual maintainer email, for example `Your Name <you@company.com>`. The config requires it for Linux builds; Windows and macOS builds do not need it.
 
-Linux DEB/RPM metadata also needs a homepage URL. electron-builder reads `homepage` from the app's `package.json` or can infer it from the Git origin; if you build from a snapshot without `.git`, set `homepage` explicitly.
+Linux DEB/RPM packages need a homepage URL. Set `homepage` in the app's `package.json`, or let electron-builder infer it from the Git origin.
 
 Add platform build commands to the app's `package.json`:
 
