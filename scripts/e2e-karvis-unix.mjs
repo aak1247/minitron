@@ -386,7 +386,6 @@ async function buildVersion(settings) {
   } : undefined;
   const pkgConfig = process.platform === 'darwin' ? {
     ...(isRecord(settings.sourceBuild.pkg) ? settings.sourceBuild.pkg : {}),
-    identifier: targetAppId,
     installLocation: installedMacParent,
     scripts: path.relative(buildResources, pkgScripts),
   } : undefined;
