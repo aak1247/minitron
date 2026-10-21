@@ -17,16 +17,18 @@ minitron 将 Electron 应用与运行时分开打包。应用只携带一个轻�
 
 ## 包体积
 
-v0.1.0，使用内置示例应用和 Electron 32.2.0。下载列为压缩包体积，其余为解压后的文件大小。
+v0.2.0，使用内置示例应用和 Electron 32.2.0。下载列为压缩包体积，其余为解压后的文件大小。
 
 | 平台 | 启动器下载 | 启动器 | 示例应用目录 | Electron 运行时 |
 |---|---:|---:|---:|---:|
-| Windows x64 | [5.19 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-windows-x64.zip) | 9.65 MiB | 9.65 MiB | 264.74 MiB |
-| Linux x64 | [6.50 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-linux-x64.tar.gz) | 13.20 MiB | 13.21 MiB | 264.98 MiB |
-| macOS Intel | [5.25 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-macos-x64.tar.gz) | 9.63 MiB | 9.64 MiB | 246.06 MiB |
-| macOS Apple Silicon | [5.09 MiB](https://github.com/aak1247/minitron/releases/download/v0.1.0/minitron-v0.1.0-macos-arm64.tar.gz) | 8.39 MiB | 8.40 MiB | 239.90 MiB |
+| Windows x64 | [5.20 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-windows-x64.zip) | 9.66 MiB | 9.67 MiB | 264.74 MiB |
+| Linux x64 | [6.51 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-linux-x64.tar.gz) | 13.23 MiB | 13.24 MiB | 264.98 MiB |
+| macOS Intel | [5.26 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-macos-x64.tar.gz) | 9.64 MiB | 9.65 MiB | 246.06 MiB |
+| macOS Apple Silicon | [5.09 MiB](https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-v0.2.0-macos-arm64.tar.gz) | 8.41 MiB | 8.41 MiB | 239.90 MiB |
 
-示例应用目录包含启动器、配置和应用资源，不含共享运行时。示例的应用更新 ZIP 仅 **7.88 KiB**。完整字节数见 Release 中的 [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.1.0/sizes.json)。
+示例应用目录包含启动器、配置和应用资源，不含共享运行时。示例的应用更新 ZIP 仅 **7.88 KiB**。完整字节数见 Release 中的 [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.2.0/sizes.json)。
+
+Karvis AI 2.0.0 的 Windows 安装包（Electron 28.3.3、NSIS）：**77.34 MiB → 10.56 MiB**，缩小约 **86%**。共享运行时另计，在首次启动时下载一次。
 
 ## 安装
 
@@ -48,11 +50,19 @@ sh /tmp/minitron-install.sh --dir ./minitron-bin
 ./minitron-bin/minitron --help
 ```
 
-脚本自动选择当前平台的二进制并校验 SHA-256。Windows 可用 `-Version v0.1.0`、Linux/macOS 可用 `--version v0.1.0` 指定版本。已有应用配置和资源会保留。
+脚本自动选择当前平台的二进制并校验 SHA-256。Windows 可用 `-Version v0.2.0`、Linux/macOS 可用 `--version v0.2.0` 指定版本。已有应用配置和资源会保留。
 
 Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖，Electron 还需要 GTK3、NSS、音频和 GBM 等桌面库；在 Ubuntu 22.04 上可安装 `libgtk-3-0 libnss3 libasound2 libgbm1`。
 
 ## 打包应用
+
+### electron-builder
+
+通过 [Minitron 适配器](packages/electron-builder/README.md)生成 Windows NSIS 安装包，自定义应用名称、图标、快捷方式和安装选项。日常 Electron 和 Node.js 开发流程保持不变。
+
+参见[可复制的 electron-builder 配置](examples/electron-builder/README.md)和[Karvis 接入示例](examples/karvis/README.md)。适配器提供 Linux `afterPack` 路径，暂不支持 macOS 打包。
+
+### 便携应用目录
 
 安装 Node.js 22.12+，然后按[打包指南](docs/usage.zh-CN.md#打包应用)操作。Windows 和 Linux/macOS 脚本使用预编译启动器，生成以下目录：
 
@@ -68,12 +78,6 @@ application/
 将此目录分发给用户。Windows 打开 `minitron.exe`，Linux/macOS 运行 `./minitron`。应用更新在后台下载，下次启动时生效；更新 ZIP 只包含应用资源。
 
 Windows 还可通过 [NSIS 打包脚本](docs/usage.zh-CN.md#windows-安装包)生成安装程序。
-
-### electron-builder
-
-如果应用已使用 electron-builder，可通过 [Minitron 适配器](packages/electron-builder/README.md)为 Windows NSIS 构建加入启动器。日常 Electron 和 Node.js 开发流程保持不变。适配器已包含 Linux `afterPack` 路径，但完整安装包流程尚未确认；适配器暂不支持 macOS 打包。Minitron 启动器仍提供 Windows x64、Linux x64、macOS x64 和 arm64 版本。
-
-参见[可复制的 electron-builder 配置](examples/electron-builder/README.md)和[Karvis 接入示例](examples/karvis/README.md)。
 
 ## 语言
 

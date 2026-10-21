@@ -65,6 +65,8 @@ See the [copyable configuration](https://github.com/aak1247/minitron/tree/main/e
 
 ## Updates and packaged resources
 
+CommonJS and ESM entry points are supported. `process.execPath` identifies the shared Electron runtime; use `process.env.MINITRON_LAUNCHER` to start the installed application.
+
 NSIS distributes and upgrades the installed package. Minitron app updates use the configured manifest and update `app.asar` plus `app.asar.unpacked`. Files copied through `extraResources` are included in the installer, but are not included in Minitron's app update archive; use ASAR resources for files that must change with an app update, or update external resources separately.
 
 `electron-updater` is not automatically integrated with Minitron. Use the Minitron manifest for Minitron app updates.
