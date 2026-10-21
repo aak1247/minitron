@@ -87,6 +87,8 @@ jobs:
         run: node scripts/check-launcher-languages.mjs "shell/target/release/minitron${{ runner.os == 'Windows' && '.exe' || '' }}"
       - name: Download verified Electron runtimes
         run: node scripts/download-e2e-runtimes.mjs
+      - name: Package a real app using the npm CLI tarball
+        run: node scripts/e2e-builder-cli.mjs
       - name: Windows end-to-end tests and installer
         if: runner.os == 'Windows'
         shell: pwsh
@@ -119,6 +121,7 @@ jobs:
           name: tests-${{ matrix.platform }}
           path: |
             dist/e2e-report.json
+            dist/e2e-builder-cli-report.json
             dist/windows/1.0.0/build.json
           if-no-files-found: warn
           retention-days: 7
