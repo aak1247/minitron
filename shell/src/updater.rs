@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_SCHEMA: u32 = 1;
-#[cfg(not(windows))]
 const INSTALLED_BASE_FILE: &str = "installed-base.json";
+const LEGACY_MIGRATION_MARKER: &str = "legacy-state-migrated";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ActiveState {
@@ -64,7 +64,6 @@ struct Transaction {
     exit_code: Option<i32>,
 }
 
-#[cfg(not(windows))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct InstalledBase {
     schema: u32,
@@ -82,71 +81,61 @@ fn read_state_file<T: DeserializeOwned>(cfg: &ShellConfig, name: &str) -> Result
     if let Some(value) = read_optional(&current)? {
         return Ok(Some(value));
     }
-    #[cfg(not(windows))]
-    {
-        let legacy = cfg.legacy_updates_dir()?.join(name);
-        if legacy != current {
-            return read_optional(&legacy);
-        }
+    let legacy = cfg.legacy_updates_dir()?.join(name);
+    if legacy != current && !updates_dir(cfg)?.join(LEGACY_MIGRATION_MARKER).exists() {
+        return read_optional(&legacy);
     }
     Ok(None)
 }
 
-/// Copy only the small state records from the old in-installation Unix layout.
+/// Copy only the small state records from the old in-installation layout.
 /// Immutable release payloads remain in place and are accepted by validation.
 pub fn migrate_legacy_state(cfg: &ShellConfig) -> Result<()> {
-    #[cfg(windows)]
-    let _ = cfg;
-    #[cfg(not(windows))]
-    {
-        let current = updates_dir(cfg)?;
-        let legacy = cfg.legacy_updates_dir()?;
-        if legacy == current {
-            return Ok(());
+    let current = updates_dir(cfg)?;
+    let legacy = cfg.legacy_updates_dir()?;
+    if legacy == current {
+        return Ok(());
+    }
+    let legacy_metadata = match fs::symlink_metadata(&legacy) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("inspect {}", legacy.display())),
+    };
+    if !legacy_metadata.file_type().is_dir() {
+        bail!(
+            "legacy updates path is not a plain directory: {}",
+            legacy.display()
+        );
+    }
+    for name in ["active.json", "pending.json", "transaction.json"] {
+        let destination = current.join(name);
+        if destination.exists() {
+            continue;
         }
-        let legacy_metadata = match fs::symlink_metadata(&legacy) {
+        let source = legacy.join(name);
+        let metadata = match fs::symlink_metadata(&source) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                return Err(error).with_context(|| format!("inspect {}", legacy.display()))
+                return Err(error).with_context(|| format!("inspect {}", source.display()))
             }
         };
-        if !legacy_metadata.file_type().is_dir() {
-            bail!(
-                "legacy updates path is not a plain directory: {}",
-                legacy.display()
-            );
-        }
-        for name in ["active.json", "pending.json", "transaction.json"] {
-            let destination = current.join(name);
-            if destination.exists() {
-                continue;
-            }
-            let source = legacy.join(name);
-            let metadata = match fs::symlink_metadata(&source) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(error).with_context(|| format!("inspect {}", source.display()))
-                }
-            };
-            ensure!(
-                metadata.file_type().is_file() && metadata.len() <= 16 * 1024 * 1024,
-                "legacy state is not a bounded regular file: {}",
-                source.display()
-            );
-            let bytes = fs::read(&source)
-                .with_context(|| format!("read legacy state {}", source.display()))?;
-            atomic_write(&destination, &bytes)?;
-        }
+        ensure!(
+            metadata.file_type().is_file() && metadata.len() <= 16 * 1024 * 1024,
+            "legacy state is not a bounded regular file: {}",
+            source.display()
+        );
+        let bytes =
+            fs::read(&source).with_context(|| format!("read legacy state {}", source.display()))?;
+        atomic_write(&destination, &bytes)?;
     }
+    atomic_write(&current.join(LEGACY_MIGRATION_MARKER), b"1\n")?;
     Ok(())
 }
 
 /// Reconcile installer-provided base resources with the state retained outside
-/// Unix installations. An installer upgrade intentionally makes its new base
+/// the installation. An installer upgrade intentionally makes its new base
 /// authoritative, while user data and immutable release payloads remain intact.
-#[cfg(not(windows))]
 pub fn reconcile_installed_base(cfg: &ShellConfig) -> Result<()> {
     let path = updates_dir(cfg)?.join(INSTALLED_BASE_FILE);
     let current = InstalledBase {
@@ -168,38 +157,81 @@ pub fn reconcile_installed_base(cfg: &ShellConfig) -> Result<()> {
         if previous.app_version != current.app_version
             || previous.required_runtime != current.required_runtime
         {
-            let active = ActiveState {
-                schema: STATE_SCHEMA,
-                active: legacy_release(cfg)?,
-                previous: None,
-                txid: None,
-            };
-            write_active(cfg, &active)?;
-            remove_file_if_exists(&updates_dir(cfg)?.join("pending.json"))?;
-            remove_file_if_exists(&updates_dir(cfg)?.join("transaction.json"))?;
-            remove_dir_if_exists(&updates_dir(cfg)?.join("attempts"))?;
-            write_json(&path, &current)?;
-            crate::runtime::register(cfg, &retained_releases(cfg)?)
-                .context("reconcile runtime refs after installer base upgrade")?;
+            reset_to_installed_base(cfg, &path, &current)?;
         }
         return Ok(());
     }
-    // Older launchers did not record the installed base. A newer active release
-    // can be a normal downloaded update, so preserve it until a subsequent
-    // installer change can be compared with this first baseline marker.
+    // Older Windows launchers stored app state beside their executable and did
+    // not record the installed base. Preserve downloads at least as new as the
+    // current package, while dropping stale releases copied from an older base.
+    let mut active = read_active(cfg)?;
+    let active_is_older = version_is_older(&active.active.app_version, &current.app_version)?;
+    if active_is_older {
+        reset_to_installed_base(cfg, &path, &current)?;
+        return Ok(());
+    }
+
+    let previous_is_older = match &active.previous {
+        Some(previous) => version_is_older(&previous.app_version, &current.app_version)?,
+        None => false,
+    };
+    let pending_is_older = match read_state_file::<PendingState>(cfg, "pending.json")? {
+        Some(pending) => version_is_older(&pending.release.app_version, &current.app_version)?,
+        None => false,
+    };
+    if previous_is_older {
+        active.previous = None;
+        active.txid = None;
+        write_active(cfg, &active)?;
+    }
+    if pending_is_older {
+        remove_file_if_exists(&updates_dir(cfg)?.join("pending.json"))?;
+        remove_file_if_exists(&updates_dir(cfg)?.join("transaction.json"))?;
+        remove_dir_if_exists(&updates_dir(cfg)?.join("attempts"))?;
+    }
     write_json(&path, &current)?;
+    if previous_is_older || pending_is_older {
+        crate::runtime::register(cfg, &retained_releases(cfg)?)
+            .context("reconcile runtime refs after installer base migration")?;
+    }
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn canonical_installation(path: &Path) -> Result<String> {
-    Ok(std::fs::canonicalize(path)
-        .with_context(|| format!("canonicalize installation directory {}", path.display()))?
-        .to_string_lossy()
-        .into_owned())
+fn version_is_older(candidate: &str, baseline: &str) -> Result<bool> {
+    let candidate = semver::Version::parse(candidate)
+        .with_context(|| format!("invalid app version {candidate:?} in retained state"))?;
+    let baseline = semver::Version::parse(baseline)
+        .with_context(|| format!("invalid installed app version {baseline:?}"))?;
+    Ok(candidate < baseline)
 }
 
-#[cfg(not(windows))]
+fn reset_to_installed_base(cfg: &ShellConfig, path: &Path, current: &InstalledBase) -> Result<()> {
+    let active = ActiveState {
+        schema: STATE_SCHEMA,
+        active: legacy_release(cfg)?,
+        previous: None,
+        txid: None,
+    };
+    write_active(cfg, &active)?;
+    remove_file_if_exists(&updates_dir(cfg)?.join("pending.json"))?;
+    remove_file_if_exists(&updates_dir(cfg)?.join("transaction.json"))?;
+    remove_dir_if_exists(&updates_dir(cfg)?.join("attempts"))?;
+    write_json(path, current)?;
+    crate::runtime::register(cfg, &retained_releases(cfg)?)
+        .context("reconcile runtime refs after installer base upgrade")?;
+    Ok(())
+}
+
+fn canonical_installation(path: &Path) -> Result<String> {
+    let canonical = std::fs::canonicalize(path)
+        .with_context(|| format!("canonicalize installation directory {}", path.display()))?
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(windows)]
+    let canonical = canonical.to_lowercase();
+    Ok(canonical)
+}
+
 fn remove_file_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -284,14 +316,11 @@ fn validate_release_for_app(cfg: &ShellConfig, release: &Release) -> Result<()> 
         .with_context(|| format!("resolve resources at {}", release.resources_dir.display()))?;
     let legacy = cfg.resources_dir()?.canonicalize().ok();
     let releases_root = updates_dir(cfg)?.join("releases").canonicalize().ok();
-    #[cfg(not(windows))]
     let legacy_releases_root = cfg
         .legacy_updates_dir()?
         .join("releases")
         .canonicalize()
         .ok();
-    #[cfg(windows)]
-    let legacy_releases_root: Option<PathBuf> = None;
     let is_legacy = legacy.as_ref().is_some_and(|root| root == &resources);
     let is_managed = releases_root
         .as_ref()
@@ -1025,7 +1054,6 @@ pub fn rollback(cfg: &ShellConfig) -> Result<Release> {
 mod tests {
     use super::*;
 
-    #[cfg(not(windows))]
     #[test]
     fn first_installer_baseline_preserves_an_existing_downloaded_release() {
         let temp = tempfile::tempdir().unwrap();
@@ -1073,6 +1101,165 @@ mod tests {
                 .join("a".repeat(64))
                 .join("resources")
         );
+    }
+
+    #[test]
+    fn legacy_install_state_migrates_and_keeps_its_release_resolvable() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        let legacy_updates = install.join("updates");
+        let resources = legacy_updates
+            .join("releases/2.0.0")
+            .join("a".repeat(64))
+            .join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("app.asar"), b"legacy release").unwrap();
+        std::fs::write(
+            install.join("minitron.toml"),
+            "app_id='test.legacy-state'\nrequired_runtime='32.2.0'\napp_version='1.0.0'\n",
+        )
+        .unwrap();
+        let cfg = ShellConfig::load_for_app_dir(&install).unwrap();
+        let release = Release {
+            app_version: "2.0.0".into(),
+            runtime_key: RuntimeKey::current("32.2.0"),
+            resources_dir: resources.canonicalize().unwrap(),
+            artifact_sha256: "a".repeat(64),
+        };
+        let active = ActiveState {
+            schema: STATE_SCHEMA,
+            active: release.clone(),
+            previous: None,
+            txid: None,
+        };
+        std::fs::write(
+            legacy_updates.join("active.json"),
+            serde_json::to_vec(&active).unwrap(),
+        )
+        .unwrap();
+
+        migrate_legacy_state(&cfg).unwrap();
+
+        let current_active = cfg.updates_dir().unwrap().join("active.json");
+        assert_eq!(
+            std::fs::read(current_active).unwrap(),
+            serde_json::to_vec(&active).unwrap()
+        );
+        validate_release_for_app(&cfg, &release).unwrap();
+        assert!(legacy_updates.join("active.json").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn first_migration_drops_old_active_and_pending_releases_after_installer_upgrade() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        let legacy_updates = install.join("updates");
+        let base_resources = install.join("resources");
+        let old_pending_resources = legacy_updates
+            .join("releases/1.5.0")
+            .join("b".repeat(64))
+            .join("resources");
+        std::fs::create_dir_all(&base_resources).unwrap();
+        std::fs::create_dir_all(&old_pending_resources).unwrap();
+        std::fs::write(base_resources.join("app.asar"), b"new installer base").unwrap();
+        std::fs::write(
+            old_pending_resources.join("app.asar"),
+            b"old pending release",
+        )
+        .unwrap();
+        std::fs::write(
+            install.join("minitron.toml"),
+            "app_id='test.windows-installer-base'\nrequired_runtime='99.98.0'\napp_version='2.0.0'\n",
+        )
+        .unwrap();
+        let cfg = ShellConfig::load_for_app_dir(&install).unwrap();
+        let old_active = Release {
+            app_version: "1.0.0".into(),
+            runtime_key: RuntimeKey::current("99.97.0"),
+            resources_dir: base_resources.canonicalize().unwrap(),
+            artifact_sha256: String::new(),
+        };
+        let old_pending = Release {
+            app_version: "1.5.0".into(),
+            runtime_key: RuntimeKey::current("99.97.0"),
+            resources_dir: old_pending_resources.canonicalize().unwrap(),
+            artifact_sha256: "b".repeat(64),
+        };
+        std::fs::write(
+            legacy_updates.join("active.json"),
+            serde_json::to_vec(&ActiveState {
+                schema: STATE_SCHEMA,
+                active: old_active,
+                previous: None,
+                txid: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            legacy_updates.join("pending.json"),
+            serde_json::to_vec(&PendingState {
+                schema: STATE_SCHEMA,
+                release: old_pending,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        migrate_legacy_state(&cfg).unwrap();
+        reconcile_installed_base(&cfg).unwrap();
+
+        let active = read_active(&cfg).unwrap().active;
+        assert_eq!(active.app_version, "2.0.0");
+        assert_eq!(active.runtime_key.version, "99.98.0");
+        assert_eq!(active.resources_dir, base_resources.canonicalize().unwrap());
+        assert!(read_state_file::<PendingState>(&cfg, "pending.json")
+            .unwrap()
+            .is_none());
+        let installed_base: InstalledBase =
+            read_optional(&cfg.updates_dir().unwrap().join(INSTALLED_BASE_FILE))
+                .unwrap()
+                .unwrap();
+        assert_eq!(installed_base.app_version, "2.0.0");
+
+        crate::runtime::unregister_and_maybe_cleanup(&cfg).unwrap();
+        crate::runtime::remove_installation_state_for_config(&cfg).unwrap();
+    }
+
+    #[test]
+    fn removed_migrated_state_does_not_fall_back_to_legacy_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        let legacy_updates = install.join("updates");
+        let resources = install.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("app.asar"), b"installed base").unwrap();
+        std::fs::create_dir_all(&legacy_updates).unwrap();
+        std::fs::write(
+            install.join("minitron.toml"),
+            "app_id='test.legacy-state-clear'\nrequired_runtime='32.2.0'\napp_version='1.0.0'\n",
+        )
+        .unwrap();
+        let cfg = ShellConfig::load_for_app_dir(&install).unwrap();
+        let active = ActiveState {
+            schema: STATE_SCHEMA,
+            active: legacy_release(&cfg).unwrap(),
+            previous: None,
+            txid: None,
+        };
+        std::fs::write(
+            legacy_updates.join("active.json"),
+            serde_json::to_vec(&active).unwrap(),
+        )
+        .unwrap();
+
+        migrate_legacy_state(&cfg).unwrap();
+        remove_file_if_exists(&active_path(&cfg).unwrap()).unwrap();
+
+        assert!(read_state_file::<ActiveState>(&cfg, "active.json")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

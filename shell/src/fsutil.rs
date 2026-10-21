@@ -26,6 +26,28 @@ impl FileLock {
     }
     pub fn try_exclusive(path: &Path) -> Result<Option<Self>> {
         let file = Self::open(path)?;
+        Self::try_lock(file)
+    }
+    /// Try to lock an existing compatibility file without creating it or
+    /// requesting write access to its parent directory.
+    pub fn try_exclusive_existing(path: &Path) -> Result<Option<Self>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .with_context(|| format!("open existing lock {}", path.display()))?;
+        Self::try_lock(file)
+    }
+    /// Lock an existing compatibility file without creating it or requesting
+    /// write access to its parent directory.
+    pub fn exclusive_existing(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .with_context(|| format!("open existing lock {}", path.display()))?;
+        fs2::FileExt::lock_exclusive(&file)?;
+        Ok(Self(file))
+    }
+    fn try_lock(file: File) -> Result<Option<Self>> {
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self(file))),
             Err(e)
@@ -122,5 +144,20 @@ mod tests {
         assert!(FileLock::try_exclusive(&lock_path).unwrap().is_none());
         drop(lock);
         assert!(FileLock::try_exclusive(&lock_path).unwrap().is_some());
+    }
+
+    #[test]
+    fn existing_lock_helpers_never_create_a_missing_legacy_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing/legacy.lock");
+        assert!(FileLock::try_exclusive_existing(&missing).is_err());
+        assert!(!missing.parent().unwrap().exists());
+
+        let path = temp.path().join("legacy.lock");
+        std::fs::write(&path, b"").unwrap();
+        let lock = FileLock::try_exclusive_existing(&path).unwrap().unwrap();
+        assert!(FileLock::try_exclusive_existing(&path).unwrap().is_none());
+        drop(lock);
+        assert!(path.is_file());
     }
 }

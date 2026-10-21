@@ -493,26 +493,31 @@ pub fn register(cfg: &ShellConfig, releases: &[Release]) -> Result<()> {
 pub fn unregister_and_maybe_cleanup(cfg: &ShellConfig) -> Result<()> {
     let install_path = canonical_install_path(&cfg.installation_dir()?)?;
     let root = runtime_root_for_config(cfg)?;
-    #[cfg(not(windows))]
     let state_id = crate::config::installation_state_id(&cfg.installation_dir()?)?;
-    #[cfg(not(windows))]
     ensure!(
         cfg.updates_dir()? == root.join("installations").join(&state_id).join("updates"),
         "installation state path does not match its runtime root and identity"
     );
     unregister_at(&root, &install_path)?;
-    #[cfg(not(windows))]
-    {
-        let canonical_root = std::fs::canonicalize(&root)
-            .with_context(|| format!("canonicalize runtime root {}", root.display()))?;
-        remove_installation_state(&canonical_root, &state_id)?;
-    }
     #[cfg(unix)]
     remove_locator(&install_path)?;
     Ok(())
 }
 
-#[cfg(not(windows))]
+/// Remove per-installation state after the caller releases its application
+/// lock. Windows cannot remove a directory while its lock files are open.
+pub fn remove_installation_state_for_config(cfg: &ShellConfig) -> Result<()> {
+    let root = runtime_root_for_config(cfg)?;
+    let state_id = crate::config::installation_state_id(&cfg.installation_dir()?)?;
+    ensure!(
+        cfg.updates_dir()? == root.join("installations").join(&state_id).join("updates"),
+        "installation state path does not match its runtime root and identity"
+    );
+    let canonical_root = std::fs::canonicalize(&root)
+        .with_context(|| format!("canonicalize runtime root {}", root.display()))?;
+    remove_installation_state(&canonical_root, &state_id)
+}
+
 fn remove_installation_state(root: &Path, state_id: &str) -> Result<()> {
     ensure!(
         state_id.len() == 64 && state_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -2035,7 +2040,6 @@ mod tests {
         assert!(locator_root_for_path(&invalid, "/opt/apps/karvis").is_err());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn removing_installation_state_keeps_sibling_installations() {
         let root = temp_root("uninstall-state");

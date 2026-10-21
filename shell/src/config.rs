@@ -3,7 +3,6 @@
 use crate::manifest::Artifact;
 use anyhow::{Context, Result};
 use serde::Deserialize;
-#[cfg(not(windows))]
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -150,25 +149,18 @@ impl ShellConfig {
         Ok(macos_bundle_root(&self.app_dir()?).is_some())
     }
 
-    /// Persistent mutable state is external to Unix installations so signed
-    /// app bundles and root-owned system installs remain read-only.
+    /// Persistent mutable state is external to the installation so protected
+    /// Windows directories and signed or root-owned Unix installs remain
+    /// read-only.
     pub fn updates_dir(&self) -> Result<PathBuf> {
-        #[cfg(windows)]
-        {
-            return Ok(self.app_dir()?.join("updates"));
-        }
-        #[cfg(not(windows))]
-        {
-            Ok(crate::runtime::runtime_root_for_config(self)?
-                .join("installations")
-                .join(installation_state_id(&self.installation_dir()?)?)
-                .join("updates"))
-        }
+        Ok(crate::runtime::runtime_root_for_config(self)?
+            .join("installations")
+            .join(installation_state_id(&self.installation_dir()?)?)
+            .join("updates"))
     }
 
-    /// Previous Unix releases kept mutable state under the installation. It is
-    /// retained as a read-only migration source for existing installations.
-    #[cfg(not(windows))]
+    /// Older releases kept mutable state under the installation. It is kept as
+    /// a read-only migration source for existing installations.
     pub fn legacy_updates_dir(&self) -> Result<PathBuf> {
         Ok(self.app_dir()?.join("updates"))
     }
@@ -187,7 +179,6 @@ fn macos_bundle_root(app_dir: &Path) -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
-#[cfg(not(windows))]
 pub fn installation_state_id(path: &Path) -> Result<String> {
     let canonical = std::fs::canonicalize(path)
         .with_context(|| format!("canonicalize installation directory {}", path.display()))?;
@@ -438,6 +429,32 @@ mod tests {
             runtime_root_from_override(None, PathBuf::from("user-data")),
             PathBuf::from("user-data/SharedElectron")
         );
+    }
+
+    #[test]
+    fn state_directory_is_external_and_scoped_to_the_canonical_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        std::fs::create_dir_all(&install).unwrap();
+        let config_path = install.join("minitron.toml");
+        std::fs::write(
+            &config_path,
+            "app_id='example.app'\nrequired_runtime='32.2.0'\napp_version='1.0.0'\n",
+        )
+        .unwrap();
+        let config = ShellConfig::load_from(&config_path).unwrap();
+        let expected = crate::runtime::runtime_root_for_config(&config)
+            .unwrap()
+            .join("installations")
+            .join(installation_state_id(&install).unwrap())
+            .join("updates");
+
+        assert_eq!(config.updates_dir().unwrap(), expected);
+        assert_ne!(
+            config.updates_dir().unwrap(),
+            config.legacy_updates_dir().unwrap()
+        );
+        assert!(!config.updates_dir().unwrap().starts_with(&install));
     }
 
     #[test]

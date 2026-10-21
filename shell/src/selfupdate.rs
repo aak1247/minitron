@@ -71,6 +71,30 @@ fn normalize_sha256(value: &str) -> Result<String> {
     Ok(value.to_ascii_lowercase())
 }
 
+fn ticket_state_dir(working_dir: &Path, declared_state_dir: Option<&Path>) -> Result<PathBuf> {
+    let Some(declared_state_dir) = declared_state_dir else {
+        // Tickets created before state_dir was added used the installation's
+        // original updates directory.
+        return Ok(working_dir.join("updates").canonicalize()?);
+    };
+
+    let cfg = ShellConfig::load_for_app_dir(working_dir)?;
+    let declared = declared_state_dir.canonicalize()?;
+    let current_matches = cfg
+        .updates_dir()?
+        .canonicalize()
+        .is_ok_and(|expected| expected == declared);
+    let legacy_matches = cfg
+        .legacy_updates_dir()?
+        .canonicalize()
+        .is_ok_and(|expected| expected == declared);
+    ensure!(
+        current_matches || legacy_matches,
+        "self-update state directory does not match installation state"
+    );
+    Ok(declared)
+}
+
 fn hash_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut digest = Sha256::new();
@@ -304,18 +328,7 @@ fn validate_ticket(ticket_path: &Path, ticket: &UpdateTicket) -> Result<()> {
         "self-update ticket path must be absolute"
     );
     let working_dir = ticket.working_dir.canonicalize()?;
-    let updates = if let Some(state_dir) = &ticket.state_dir {
-        let cfg = ShellConfig::load_for_app_dir(&working_dir)?;
-        let expected = cfg.updates_dir()?.canonicalize()?;
-        let declared = state_dir.canonicalize()?;
-        ensure!(
-            declared == expected,
-            "self-update state directory does not match installation state"
-        );
-        declared
-    } else {
-        ticket.working_dir.join("updates").canonicalize()?
-    };
+    let updates = ticket_state_dir(&working_dir, ticket.state_dir.as_deref())?;
     let staging = updates.join("staging").canonicalize()?;
     ensure!(updates.is_absolute(), "updates directory is not absolute");
     ensure!(
@@ -580,5 +593,23 @@ mod tests {
         assert!(same_process_identity(42, 42));
         assert!(same_process_identity(42, 0));
         assert!(!same_process_identity(42, 43));
+    }
+
+    #[test]
+    fn explicit_state_dir_accepts_legacy_installation_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        let legacy_updates = install.join("updates");
+        std::fs::create_dir_all(&legacy_updates).unwrap();
+        std::fs::write(
+            install.join("minitron.toml"),
+            "app_id='test.selfupdate-state'\nrequired_runtime='32.2.0'\napp_version='1.0.0'\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            ticket_state_dir(&install, Some(&legacy_updates)).unwrap(),
+            legacy_updates.canonicalize().unwrap()
+        );
     }
 }

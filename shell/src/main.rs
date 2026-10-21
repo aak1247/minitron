@@ -71,9 +71,11 @@ fn run() -> Result<i32> {
                 println!("STOPPED");
             }
             ManagementCommand::Uninstall => {
-                let _application = lifecycle::try_lock_for_management(&cfg)?
+                let application = lifecycle::try_lock_for_management(&cfg)?
                     .context("this application installation is already running; close it before updating or uninstalling")?;
                 runtime::unregister_and_maybe_cleanup(&cfg)?;
+                drop(application);
+                runtime::remove_installation_state_for_config(&cfg)?;
                 println!("UNINSTALLED");
             }
             ManagementCommand::RuntimeRoot => {
@@ -92,7 +94,6 @@ fn run() -> Result<i32> {
     let _application = lifecycle::try_lock_for_management(&cfg)?
         .context("this application installation is already running; close it before updating or uninstalling")?;
     updater::migrate_legacy_state(&cfg)?;
-    #[cfg(not(windows))]
     updater::reconcile_installed_base(&cfg)?;
     if args.first().is_some_and(|x| x == "--rollback") {
         let release = updater::rollback(&cfg)?;

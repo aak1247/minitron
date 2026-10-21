@@ -136,7 +136,11 @@ pub fn stop_and_lock(cfg: &ShellConfig) -> Result<ApplicationLocks> {
     // Claim the app lock first when the launcher has already exited. This also
     // prevents a new launch racing an orphan-child shutdown.
     let mut app_lock = try_application_locks(cfg)?;
-    let process_lock = FileLock::exclusive(&lock_path)?;
+    let mut process_locks = vec![FileLock::exclusive(&lock_path)?];
+    let legacy_lock_path = cfg.legacy_updates_dir()?.join(RECORD_LOCK_FILE);
+    if legacy_lock_path != lock_path && legacy_lock_path.exists() {
+        process_locks.push(FileLock::exclusive_existing(&legacy_lock_path)?);
+    }
     let Some((record, source_path)) = read_record_for_cfg(cfg, &record_path)? else {
         if app_lock.is_none() {
             bail!("application lock is held but its process record is missing; refusing to uninstall or stop blindly");
@@ -177,7 +181,7 @@ pub fn stop_and_lock(cfg: &ShellConfig) -> Result<ApplicationLocks> {
     if source_path == record_path {
         remove_record(&record_path)?;
     }
-    drop(process_lock);
+    drop(process_locks);
 
     if app_lock.is_none() {
         app_lock = Some(wait_for_application_locks(cfg, APP_LOCK_WAIT)?);
@@ -191,18 +195,15 @@ fn record_paths(cfg: &ShellConfig) -> Result<(PathBuf, PathBuf)> {
 }
 
 fn read_record_for_cfg(
-    _cfg: &ShellConfig,
+    cfg: &ShellConfig,
     current_path: &Path,
 ) -> Result<Option<(ProcessRecord, PathBuf)>> {
     if let Some(record) = read_record(current_path)? {
         return Ok(Some((record, current_path.to_path_buf())));
     }
-    #[cfg(not(windows))]
-    {
-        let legacy_path = _cfg.legacy_updates_dir()?.join(RECORD_FILE);
-        if legacy_path != current_path {
-            return Ok(read_record(&legacy_path)?.map(|record| (record, legacy_path)));
-        }
+    let legacy_path = cfg.legacy_updates_dir()?.join(RECORD_FILE);
+    if legacy_path != current_path {
+        return Ok(read_record(&legacy_path)?.map(|record| (record, legacy_path)));
     }
     Ok(None)
 }
@@ -210,7 +211,13 @@ fn read_record_for_cfg(
 fn application_lock_paths(cfg: &ShellConfig) -> Result<Vec<PathBuf>> {
     #[cfg(windows)]
     {
-        return Ok(vec![cfg.updates_dir()?.join("application.lock")]);
+        let current = cfg.updates_dir()?.join("application.lock");
+        let legacy = cfg.legacy_updates_dir()?.join("application.lock");
+        let mut paths = vec![current];
+        if legacy != paths[0] && legacy.exists() {
+            paths.push(legacy);
+        }
+        return Ok(paths);
     }
     #[cfg(not(windows))]
     {
@@ -243,7 +250,12 @@ fn try_application_locks(cfg: &ShellConfig) -> Result<Option<ApplicationLocks>> 
         if index > 0 && !path.exists() {
             continue;
         }
-        let Some(lock) = FileLock::try_exclusive(&path)? else {
+        let result = if index == 0 {
+            FileLock::try_exclusive(&path)?
+        } else {
+            FileLock::try_exclusive_existing(&path)?
+        };
+        let Some(lock) = result else {
             return Ok(None);
         };
         locks.push(lock);
@@ -391,6 +403,42 @@ mod tests {
 
     fn record_path(cfg: &ShellConfig) -> PathBuf {
         cfg.updates_dir().unwrap().join(RECORD_FILE)
+    }
+
+    #[test]
+    fn process_record_lookup_reads_legacy_install_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        let cfg = test_config(&install);
+        let legacy_path = cfg.legacy_updates_dir().unwrap().join(RECORD_FILE);
+        let record = ProcessRecord {
+            schema_version: RECORD_SCHEMA_VERSION,
+            owner_pid: 1,
+            owner_start_time: 2,
+            child_pid: None,
+            child_start_time: None,
+            installation: canonical_installation(&install).unwrap(),
+        };
+        write_record(&legacy_path, &record).unwrap();
+
+        assert_eq!(
+            read_record_for_cfg(&cfg, &record_path(&cfg)).unwrap(),
+            Some((record, legacy_path))
+        );
+    }
+
+    #[test]
+    fn missing_legacy_application_lock_is_not_added_to_management_locks() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        let cfg = test_config(&install);
+        let legacy = cfg.legacy_updates_dir().unwrap();
+        assert!(!legacy.exists());
+
+        let paths = application_lock_paths(&cfg).unwrap();
+
+        assert!(!paths.contains(&legacy.join("application.lock")));
+        assert!(!legacy.exists());
     }
 
     fn remove_test_state(cfg: &ShellConfig) {
