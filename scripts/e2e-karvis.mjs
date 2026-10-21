@@ -17,7 +17,7 @@ const adapterPath = path.join(repo, 'packages/electron-builder/index.js');
 const options = parseArguments(process.argv.slice(2));
 
 if (options.help) {
-  console.log('Usage: node scripts/e2e-karvis.mjs --project <Karvis project> [--published-package <exact version> | --launcher <minitron.exe> --runtime-zip <Electron 28.3.3 ZIP>] [--observe-ms <milliseconds>] [--skip-baseline]');
+  console.log('Usage: node scripts/e2e-karvis.mjs --project <Karvis project> [--published-package <exact version> | --launcher <minitron.exe> --runtime-zip <Electron 28.3.3 ZIP>] [--default-runtime] [--protected-install] [--observe-ms <milliseconds>] [--skip-baseline]');
   process.exit(0);
 }
 if (options['published-package'] && !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(options['published-package'])) throw new Error('--published-package must be an exact npm version');
@@ -57,6 +57,7 @@ const report = {
   runtimeVersion,
   runtimePlatform,
   publishedPackage: options['published-package'] ? 'minitron-builder@' + options['published-package'] : null,
+  protectedInstall: Boolean(options['protected-install']),
   work,
   results: [],
   commands: [],
@@ -334,7 +335,7 @@ try {
   report.builds.peer200 = summarizeBuild(peer200, peer200Zip);
   report.filesizes.minitronInstallerBytes.peer200 = peer200.installerBytes;
   report.filesizes.unpackedAppBytes.peer200 = peer200.unpackedBytes;
-  if (options['published-package']) {
+  if (options['published-package'] || options['default-runtime']) {
     await step('published CLI preserves default official runtime downloads without an update server', async () => {
       report.runtimeConfiguration = [];
       for (const build of [target200, target201, peer200]) {
@@ -394,6 +395,8 @@ try {
   const target200DiagnosticPath = path.join(work, 'diagnostics', 'target-2.0.0.json');
   const peer200DiagnosticPath = path.join(work, 'diagnostics', 'peer-2.0.0.json');
   await step('launch both same-name Karvis AI shortcuts and verify packaged renderer plus IPC', async () => {
+    await protectInstallation(targetInstall);
+    await protectInstallation(peerInstall);
     await fs.mkdir(targetUserDataDirectory, { recursive: true });
     await fs.writeFile(targetUserDataSentinelPath, targetUserDataSentinelContents, { flag: 'wx' });
     await launchShortcut(launchShortcutScript, targetShortcut, target200DiagnosticPath, targetUserDataDirectory);
@@ -411,6 +414,8 @@ try {
     assert(await exists(runtimePath(runtimeRoot)), 'Electron 28.3.3 was not downloaded into the isolated shared runtime cache');
     assert(await exists(path.join(runtimeRoot, 'refs.json')), 'Runtime reference registry was not created');
     report.launches = { targetInitial: targetDiagnostic, peerInitial: peerDiagnostic };
+    await assertProtectedInstallation(targetInstall);
+    await assertProtectedInstallation(peerInstall);
   });
 
   await step('upgrade the running target through NSIS while the same-name peer remains alive', async () => {
@@ -436,12 +441,14 @@ try {
   currentManifests.target = target201Manifest;
   const target201DiagnosticPath = path.join(work, 'diagnostics', 'target-2.0.1.json');
   await step('start the upgraded Karvis shortcut and confirm version 2.0.1 over renderer IPC', async () => {
+    await protectInstallation(targetInstall);
     await launchShortcut(launchShortcutScript, targetShortcut, target201DiagnosticPath, targetUserDataDirectory, 'startmenu');
     const diagnostic = await waitForDiagnostic(target201DiagnosticPath, targetInstall);
     validateDiagnostic(diagnostic, targetInstall, '2.0.1');
     targetInstall.upgradedChild = await processIdentityFromRecord(targetInstall);
     await assertProcessIsAlive(peerInstall.firstChild, 'Peer Karvis process was stopped while launching the upgraded target');
     report.launches.targetUpgraded = diagnostic;
+    await assertProtectedInstallation(targetInstall);
   });
 
   if (options['observe-ms'] > 0) {
@@ -480,6 +487,9 @@ try {
   report.error = error && error.stack ? error.stack : String(error);
   console.error(report.error);
 } finally {
+  for (const installation of [targetInstall, peerInstall]) {
+    await restoreInstallation(installation).catch(error => report.cleanupErrors = [...(report.cleanupErrors || []), String(error)]);
+  }
   if (failure) {
     await stopInstallationIfPresent(targetInstall).catch(error => report.cleanupErrors = [...(report.cleanupErrors || []), String(error)]);
     await stopInstallationIfPresent(peerInstall).catch(error => report.cleanupErrors = [...(report.cleanupErrors || []), String(error)]);
@@ -528,7 +538,7 @@ function parseArguments(args) {
     if (!argument.startsWith('--')) throw new Error('Unexpected argument: ' + argument);
     const equalAt = argument.indexOf('=');
     const key = argument.slice(2, equalAt < 0 ? undefined : equalAt);
-    if (key === 'skip-baseline') {
+    if (['skip-baseline', 'default-runtime', 'protected-install'].includes(key)) {
       parsed[key] = true;
       continue;
     }
@@ -728,9 +738,7 @@ async function buildInstaller(settings) {
     'module.exports = withMinitron(config, ' + JSON.stringify({
       projectDir: projectCopy,
       launcherPath: settings.launcherPath,
-      manifestUrl: settings.manifestUrl,
-      allowLocalhostHttp: true,
-      manifestPublicKey: settings.manifestPublicKey,
+      ...(!options['default-runtime'] ? { manifestUrl: settings.manifestUrl, allowLocalhostHttp: true, manifestPublicKey: settings.manifestPublicKey } : {}),
       runtimeVersion,
       iconPath: pngIconPath,
     }, null, 2) + ');',
@@ -1025,7 +1033,7 @@ async function createUpdateArchive(build, script, workDir, label) {
 }
 
 async function publishManifest(settings) {
-  if (options['published-package']) return { app: { version: settings.version } };
+  if (options['published-package'] || options['default-runtime']) return { app: { version: settings.version } };
   let previousManifestPath;
   if (settings.previousManifest) {
     previousManifestPath = path.join(work, 'previous-' + settings.owner + '-' + settings.version + '.json');
@@ -1117,6 +1125,8 @@ function toInstallPath(value) {
 }
 
 async function installNsis(build, installation) {
+  await restoreInstallation(installation);
+  delete installation.stateDirectory;
   await fs.mkdir(path.dirname(installation.directory), { recursive: true });
   installation.directory = toInstallPath(installation.directory);
   // electron-builder's StdUtils parser needs quotes around a /D value that
@@ -1255,7 +1265,14 @@ function validateDiagnostic(diagnostic, installation, expectedVersion) {
 }
 
 async function readProcessRecord(installation) {
-  const filename = path.join(installation.directory, 'updates', 'process.json');
+  if (!installation.stateDirectory) {
+    const result = await runCommand(installation.exePath, ['--app-dir', installation.directory, '--state-dir'], {
+      cwd: work, label: 'query-state-' + path.basename(installation.directory),
+    });
+    installation.stateDirectory = result.stdout.trim();
+    assert(path.isAbsolute(installation.stateDirectory), 'Launcher did not return an absolute state directory');
+  }
+  const filename = path.join(installation.stateDirectory, 'process.json');
   try {
     const source = await fs.readFile(filename, 'utf8');
     return JSON.parse(source.replace(/("(?:ownerStartTime|childStartTime)"\s*:\s*)(\d+)/g, '$1"$2"'));
@@ -1303,6 +1320,7 @@ function runtimePath(root) {
 }
 
 async function uninstallNsis(installation) {
+  await restoreInstallation(installation);
   const uninstallers = [];
   for (const entry of await fs.readdir(installation.directory, { withFileTypes: true }).catch(() => [])) {
     if (entry.isFile() && /uninstall.*\.exe/i.test(entry.name)) uninstallers.push(path.join(installation.directory, entry.name));
@@ -1352,4 +1370,69 @@ async function cleanupOwnedInstallation(installation) {
   if (!hasUninstaller && !(await exists(cleanupTarget.exePath || ''))) return;
   await uninstallNsis(cleanupTarget);
   report.failureCleanup = [...(report.failureCleanup || []), directory];
+}
+
+async function protectInstallation(installation) {
+  if (!options['protected-install']) return;
+  const directory = path.resolve(installation.directory);
+  assert(directory.toLowerCase().startsWith((path.join(work, 'installed') + path.sep).toLowerCase()), 'Only this run owns the directory to protect');
+  installation.aclBackup = path.join(work, path.basename(directory) + '-acl.txt');
+  const script = path.join(work, 'protect-installation.ps1');
+  await fs.writeFile(script, [
+    '$ErrorActionPreference = "Stop"',
+    '$directory = $env:KARVIS_E2E_INSTALL_DIRECTORY',
+    '$acl = Get-Acl -LiteralPath $directory',
+    '[IO.File]::WriteAllText($env:KARVIS_E2E_ACL_BACKUP, $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access))',
+    '$protected = New-Object Security.AccessControl.DirectorySecurity',
+    '$protected.SetAccessRuleProtection($true, $false)',
+    '$user = [Security.Principal.WindowsIdentity]::GetCurrent().User',
+    '$inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit',
+    '$rule = New-Object Security.AccessControl.FileSystemAccessRule($user, [Security.AccessControl.FileSystemRights]::ReadAndExecute, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)',
+    '$protected.AddAccessRule($rule)',
+    'Set-Acl -LiteralPath $directory -AclObject $protected',
+  ].join('\r\n'));
+  await runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', script], {
+    env: { ...process.env, KARVIS_E2E_INSTALL_DIRECTORY: directory, KARVIS_E2E_ACL_BACKUP: installation.aclBackup },
+    label: 'protect-' + path.basename(directory),
+  });
+  for (const parent of [directory, path.join(directory, 'resources')]) {
+    const probe = path.join(parent, 'minitron-write-probe-' + runId);
+    await assert.rejects(fs.writeFile(probe, 'must fail', { flag: 'wx' }), error => ['EACCES', 'EPERM'].includes(error.code), 'The standard user can still write to the protected installation');
+  }
+  installation.protectedSnapshot = await snapshotInstalledTree(directory);
+}
+
+async function restoreInstallation(installation) {
+  if (!installation?.aclBackup || !await exists(installation.directory)) return;
+  const script = path.join(work, 'restore-installation.ps1');
+  await fs.writeFile(script, [
+    '$ErrorActionPreference = "Stop"',
+    '$acl = Get-Acl -LiteralPath $env:KARVIS_E2E_INSTALL_DIRECTORY',
+    '$acl.SetSecurityDescriptorSddlForm([IO.File]::ReadAllText($env:KARVIS_E2E_ACL_BACKUP), [Security.AccessControl.AccessControlSections]::Access)',
+    'Set-Acl -LiteralPath $env:KARVIS_E2E_INSTALL_DIRECTORY -AclObject $acl',
+  ].join('\r\n'));
+  await runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', script], {
+    env: { ...process.env, KARVIS_E2E_INSTALL_DIRECTORY: installation.directory, KARVIS_E2E_ACL_BACKUP: installation.aclBackup },
+    label: 'restore-' + path.basename(installation.directory),
+  });
+  delete installation.aclBackup;
+}
+
+async function snapshotInstalledTree(directory) {
+  const files = new Map();
+  for (const entry of await fs.readdir(directory, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) {
+      const filename = path.join(entry.parentPath, entry.name);
+      files.set(path.relative(directory, filename), await hashPath(filename));
+    }
+  }
+  return files;
+}
+
+async function assertProtectedInstallation(installation) {
+  if (!options['protected-install']) return;
+  assert.deepEqual(diffSnapshots(installation.protectedSnapshot, await snapshotInstalledTree(installation.directory)), [], 'Launch modified the protected installation');
+  assert(!await exists(path.join(installation.directory, 'updates')), 'Launcher created mutable state inside the installation');
+  assert(!path.resolve(installation.stateDirectory).toLowerCase().startsWith(path.resolve(installation.directory).toLowerCase() + path.sep), 'State stayed inside the installation');
+  report.protectedLaunches = [...(report.protectedLaunches || []), { directory: installation.directory, stateDirectory: installation.stateDirectory, filesUnchanged: true, writesDenied: true }];
 }
