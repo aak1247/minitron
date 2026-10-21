@@ -25,7 +25,7 @@ test("afterPack converts a branded .app and preserves bundle identity and app re
     launcherPath: fixture.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: fixture.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" }));
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" }));
 
   assert.equal(fs.readFileSync(fixture.mainInfoPlist, "utf8"), MAIN_INFO_PLIST);
   assert.equal(fs.readFileSync(fixture.brandIconPath, "utf8"), "branded-icon");
@@ -76,7 +76,7 @@ test("afterPack converts an arm64 .app and rejects a mismatched launcher archite
     launcherPath: fixture.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: fixture.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" }));
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" }));
   assert.deepEqual(fs.readFileSync(fixture.executablePath), fixture.launcherBytes);
 
   const mismatch = await makeMacFixture(t, "arm64", "x64");
@@ -85,7 +85,7 @@ test("afterPack converts an arm64 .app and rejects a mismatched launcher archite
     launcherPath: mismatch.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: mismatch.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" })), /does not contain the arm64 architecture/);
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" })), /does not contain the arm64 architecture/);
   assert.deepEqual(fs.readFileSync(mismatch.executablePath), before);
 });
 
@@ -95,12 +95,12 @@ test("afterPack rejects MAS and universal macOS targets explicitly", async (t) =
     launcherPath: fixture.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: fixture.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" })), /does not support the macOS App Store/);
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" })), /does not support the macOS App Store/);
   await assert.rejects(afterPack(makeMacContext(fixture, "universal"), {
     launcherPath: fixture.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: fixture.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" })), /does not support electron-builder's universal target/);
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" })), /does not support electron-builder's universal target/);
 });
 
 test("afterPack rejects a stale macOS Electron distribution before modifying app.asar", async (t) => {
@@ -111,7 +111,7 @@ test("afterPack rejects a stale macOS Electron distribution before modifying app
     launcherPath: fixture.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: fixture.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" })), /resolved 28\.3\.3/);
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" })), /resolved 28\.3\.3/);
   assert.equal(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"), originalManifest);
 });
 

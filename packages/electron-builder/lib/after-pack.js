@@ -26,14 +26,19 @@ const {
   writeMacUninstaller,
 } = require("./mac-app");
 const { composeMacPkgLifecycle } = require("./mac-pkg");
+const { withLinuxInstallers } = require("./linux-installer");
 
 const CJS_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.cjs";
 const ESM_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.mjs";
 const BOOTSTRAP_ENTRIES = [CJS_BOOTSTRAP_ENTRY, ESM_BOOTSTRAP_ENTRY];
-const MINIMUM_LAUNCHER_VERSION = [0, 2, 0];
+const MINIMUM_LAUNCHER_VERSIONS = {
+  win32: [0, 2, 0],
+  linux: [0, 3, 0],
+  darwin: [0, 3, 0],
+};
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-function createAfterPackHook(previousHook, options) {
+function createAfterPackHook(previousHook, options, spawn = spawnSync) {
   return async (context) => {
     assertSupportedPlatform(context.electronPlatformName);
     if (previousHook != null) {
@@ -43,7 +48,10 @@ function createAfterPackHook(previousHook, options) {
       }
       await resolved(context);
     }
-    await afterPack(context, options);
+    if (context.electronPlatformName === "linux") {
+      composeLinuxInstallerLifecycle(context, options.projectDir);
+    }
+    await afterPack(context, options, spawn);
   };
 }
 
@@ -64,6 +72,80 @@ async function resolveHook(hook, context) {
   return loaded.afterPack || loaded.default || loaded;
 }
 
+function composeLinuxInstallerLifecycle(context, requestedProjectDir) {
+  const packager = context.packager;
+  if (!packager || typeof packager !== "object") {
+    throw new Error("Minitron Linux installer lifecycle requires electron-builder's resolved packager context");
+  }
+  const appInfo = packager.appInfo;
+  if (!appInfo || typeof appInfo !== "object") {
+    throw new Error("electron-builder did not expose resolved appInfo for Linux installer lifecycle composition");
+  }
+  const productName = requireResolvedString(appInfo.productName, "appInfo.productName");
+  const executableName = requireResolvedString(packager.executableName, "packager.executableName");
+  const projectDir = requestedProjectDir === undefined
+    ? resolveProjectDir(packager)
+    : path.resolve(requestedProjectDir);
+  const packagerConfig = isRecord(packager.config) ? packager.config : {};
+  const configuredLinux = isRecord(packagerConfig.linux) ? packagerConfig.linux : {};
+  const resolvedLinux = isRecord(packager.platformSpecificBuildOptions)
+    ? packager.platformSpecificBuildOptions
+    : {};
+  const targetInstances = Array.isArray(context.targets) ? context.targets : [];
+  const targetNames = targetInstances.map((target) => {
+    if (!target || typeof target.name !== "string" || target.name.trim() === "") {
+      throw new Error("electron-builder Linux afterPack context contains a target without a resolved name");
+    }
+    return target.name;
+  });
+  const installerConfig = {
+    ...packagerConfig,
+    projectDir,
+    productName,
+    executableName,
+    linux: {
+      ...configuredLinux,
+      ...resolvedLinux,
+      executableName,
+      ...(targetNames.length > 0 ? { target: targetNames } : {}),
+    },
+  };
+  const packageTargets = targetInstances.filter((target) => ["deb", "rpm"].includes(target.name.toLowerCase()));
+
+  for (const target of packageTargets) {
+    if (!isRecord(target.options)) {
+      throw new Error(`electron-builder Linux ${target.name} target has no mutable options object`);
+    }
+    const name = target.name.toLowerCase();
+    const configuredTarget = isRecord(packagerConfig[name]) ? packagerConfig[name] : {};
+    const packageOptions = {
+      ...configuredTarget,
+      ...target.options,
+    };
+    const targetFpm = target.options.fpm !== undefined
+      ? target.options.fpm
+      : configuredTarget.fpm !== undefined
+        ? configuredTarget.fpm
+        : installerConfig.linux.fpm;
+    packageOptions.fpm = targetFpm;
+    installerConfig[name] = packageOptions;
+  }
+
+  const composed = withLinuxInstallers(installerConfig, { projectDir });
+  for (const target of packageTargets) {
+    const name = target.name.toLowerCase();
+    const options = composed.config[name];
+    if (!options || !Array.isArray(options.fpm)) {
+      throw new Error(`Minitron failed to compose Linux ${name} FPM lifecycle arguments`);
+    }
+    target.options.fpm = options.fpm;
+  }
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 async function afterPack(context, options, spawn = spawnSync) {
   assertSupportedPlatform(context && context.electronPlatformName);
   const packager = context && context.packager;
@@ -79,7 +161,7 @@ async function afterPack(context, options, spawn = spawnSync) {
 
   const launcherPath = resolveFromProject(options.launcherPath, projectDir);
   assertLauncherFile(launcherPath);
-  const launcherVersion = verifyLauncherVersion(launcherPath, spawn);
+  const launcherVersion = verifyLauncherVersion(launcherPath, spawn, context.electronPlatformName);
 
   const appInfo = packager.appInfo;
   if (!appInfo || typeof appInfo !== "object") {
@@ -281,7 +363,7 @@ function assertLauncherFile(launcherPath) {
   if (!stat.isFile()) throw new Error(`Minitron launcher must be a file: ${launcherPath}`);
 }
 
-function verifyLauncherVersion(launcherPath, spawn = spawnSync) {
+function verifyLauncherVersion(launcherPath, spawn = spawnSync, platform = "win32") {
   const result = spawn(launcherPath, ["--version"], {
     encoding: "utf8",
     timeout: 10_000,
@@ -299,8 +381,12 @@ function verifyLauncherVersion(launcherPath, spawn = spawnSync) {
     throw new Error(`Minitron launcher --version returned an invalid version: ${output || "<empty>"}`);
   }
   const version = match.slice(1).map(Number);
-  if (compareVersions(version, MINIMUM_LAUNCHER_VERSION) < 0) {
-    throw new Error(`Minitron launcher ${match[1]}.${match[2]}.${match[3]} is too old; version 0.2.0 or newer is required`);
+  const minimumVersion = MINIMUM_LAUNCHER_VERSIONS[platform];
+  if (!minimumVersion) {
+    throw new Error(`Minitron has no launcher compatibility policy for ${String(platform)}`);
+  }
+  if (compareVersions(version, minimumVersion) < 0) {
+    throw new Error(`Minitron launcher ${match[1]}.${match[2]}.${match[3]} is too old; version ${minimumVersion.join(".")} or newer is required for ${platform}`);
   }
   return `${version[0]}.${version[1]}.${version[2]}`;
 }

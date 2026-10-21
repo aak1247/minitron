@@ -33,6 +33,9 @@ test("withMinitron composes config without mutating existing builder hooks or NS
   });
 
   assert.notEqual(config, originalConfig);
+  assert.notEqual(config.linux, originalConfig.linux);
+  assert.deepEqual(config.linux.target, ["deb", "rpm"]);
+  assert.equal(originalConfig.linux, undefined);
   assert.notEqual(config.nsis, originalConfig.nsis);
   assert.equal(config.nsis.oneClick, false);
   assert.equal(originalConfig.nsis.include, "user.nsh");
@@ -46,6 +49,27 @@ test("withMinitron composes config without mutating existing builder hooks or NS
   assert.match(transformed, /!macro minitronUserUnInit/);
   assert.match(transformed, /!insertmacro minitronUserUnInit/);
   assert.match(wrapper, /installer\.nsh/);
+});
+
+test("withMinitron preserves explicit Linux targets and adds Linux defaults alongside global targets", (t) => {
+  const projectDir = makeTempDir();
+  t.after(() => fs.rmSync(projectDir, { recursive: true, force: true }));
+  const linuxConfig = { target: ["AppImage"], icon: "assets/icon.png" };
+  const explicitLinux = withMinitron({ linux: linuxConfig }, {
+    projectDir,
+    launcherPath: "minitron",
+    manifestUrl: "https://updates.example.test/manifest.json",
+  });
+  assert.deepEqual(explicitLinux.linux, linuxConfig);
+  assert.notEqual(explicitLinux.linux, linuxConfig);
+
+  const explicitGlobal = withMinitron({ target: ["dir"] }, {
+    projectDir,
+    launcherPath: "minitron",
+    manifestUrl: "https://updates.example.test/manifest.json",
+  });
+  assert.deepEqual(explicitGlobal.target, ["dir"]);
+  assert.deepEqual(explicitGlobal.linux.target, ["deb", "rpm"]);
 });
 
 test("NSIS include traversal aliases one nested customUnInit and rejects collisions", (t) => {
@@ -128,6 +152,9 @@ test("launcher and runtime versions are exact and enforce the minimum launcher",
     return { status: 0, stdout: "Minitron 0.2.0\n", stderr: "" };
   }), "0.2.0");
   assert.throws(() => verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.1.9", stderr: "" })), /0\.2\.0 or newer/);
+  assert.equal(verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.3.0", stderr: "" }), "linux"), "0.3.0");
+  assert.equal(verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.3.0", stderr: "" }), "darwin"), "0.3.0");
+  assert.throws(() => verifyLauncherVersion("unused", () => ({ status: 0, stdout: "0.2.9", stderr: "" }), "linux"), /0\.3\.0 or newer/);
   assert.throws(() => resolveRuntimeVersion("28.3.2", RUNTIME_VERSION), /does not match resolved Electron runtime/);
   assert.equal(resolveRuntimeVersion(undefined, RUNTIME_VERSION), RUNTIME_VERSION);
 });
@@ -224,7 +251,7 @@ test("afterPack rejects a host Electron distribution for a different target befo
     launcherPath: fixture.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: fixture.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" })), /Electron linux runtime executable is missing/);
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" })), /Electron linux runtime executable is missing/);
   assert.equal(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"), originalManifest);
   assert.equal(fs.readFileSync(path.join(fixture.appOutDir, "Fixture.exe"), "utf8"), "electron-branded-binary");
 });
@@ -236,13 +263,133 @@ test("afterPack preserves the Linux executable name and replaces only the offici
     launcherPath: fixture.launcherPath,
     manifestUrl: "https://updates.example.test/manifest.json",
     iconPath: fixture.iconPath,
-  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" }));
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" }));
 
   assert.equal(fs.readFileSync(path.join(fixture.appOutDir, "fixture"), "utf8"), "launcher-binary");
   assert.equal(fs.existsSync(path.join(fixture.appOutDir, "electron")), false);
   const manifest = JSON.parse(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"));
   assert.equal(manifest.metadata.minitron.executableName, "fixture");
   assert.equal(fs.readFileSync(path.join(fixture.resourcesDir, "custom.pak"), "utf8"), "application-owned-content");
+});
+
+test("createAfterPackHook composes Linux lifecycle into resolved DEB and RPM targets", async (t) => {
+  const fixture = await makeFixture(t, "linux");
+  fs.writeFileSync(path.join(fixture.projectDir, "package.json"), JSON.stringify({
+    name: "stale-package-name",
+    productName: "Stale Package Product",
+  }));
+  fs.renameSync(
+    path.join(fixture.appOutDir, "fixture"),
+    path.join(fixture.appOutDir, "resolved-cli"),
+  );
+
+  const calls = [];
+  const debTarget = {
+    name: "deb",
+    options: {
+      fpm: ["--deb-priority", "computed"],
+      afterInstall: "resolved-deb-after-install.sh",
+      afterRemove: "resolved-deb-after-remove.sh",
+    },
+  };
+  const rpmTarget = {
+    name: "rpm",
+    options: {
+      fpm: ["--rpm-summary", "computed"],
+      afterInstall: "resolved-rpm-after-install.sh",
+      afterRemove: "resolved-rpm-after-remove.sh",
+    },
+  };
+  const context = makeContext(fixture, "linux");
+  context.appOutDir = fixture.appOutDir;
+  context.targets = [debTarget, rpmTarget];
+  context.packager.executableName = "resolved-cli";
+  context.packager.appInfo.productName = "Resolved Product";
+  context.packager.platformSpecificBuildOptions = {
+    target: ["deb", "rpm"],
+    executableName: "platform-cli",
+    fpm: ["--vendor", "resolved global vendor"],
+  };
+
+  const userAfterPack = async (packContext) => {
+    calls.push("user");
+    packContext.targets[0].options.fpm.push("--user-after-pack");
+  };
+  const options = {
+    launcherPath: fixture.launcherPath,
+    projectDir: fixture.projectDir,
+    manifestUrl: "https://updates.example.test/manifest.json",
+    iconPath: fixture.iconPath,
+  };
+  const config = withMinitron({
+    projectDir: fixture.projectDir,
+    productName: "Configured Product",
+    electronDist: fixture.electronDist,
+    afterPack: userAfterPack,
+    linux: { target: ["deb", "rpm"], fpm: ["--vendor", "configured vendor"] },
+    deb: { afterInstall: "configured-deb-install.sh", fpm: ["--deb-priority", "configured"] },
+    rpm: { afterRemove: "configured-rpm-remove.sh" },
+  }, options);
+  context.packager.config = config;
+
+  const hook = createAfterPackHook(userAfterPack, options, () => ({
+    status: 0,
+    stdout: "0.3.0",
+    stderr: "",
+  }));
+  await hook(context);
+
+  assert.deepEqual(calls, ["user"]);
+  assert.equal(fs.readFileSync(path.join(fixture.appOutDir, "resolved-cli"), "utf8"), "launcher-binary");
+  const manifest = JSON.parse(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"));
+  assert.equal(manifest.metadata.minitron.executableName, "resolved-cli");
+  assert.deepEqual(debTarget.options.fpm.slice(0, 3), ["--deb-priority", "computed", "--user-after-pack"]);
+  assert.deepEqual(rpmTarget.options.fpm.slice(0, 2), ["--rpm-summary", "computed"]);
+  assert.equal(debTarget.options.afterInstall, "resolved-deb-after-install.sh");
+  assert.equal(debTarget.options.afterRemove, "resolved-deb-after-remove.sh");
+  assert.equal(rpmTarget.options.afterInstall, "resolved-rpm-after-install.sh");
+  assert.equal(rpmTarget.options.afterRemove, "resolved-rpm-after-remove.sh");
+
+  for (const [target, options] of [["deb", debTarget.options], ["rpm", rpmTarget.options]]) {
+    const index = options.fpm.indexOf("--before-remove");
+    assert.notEqual(index, -1);
+    const script = fs.readFileSync(options.fpm[index + 1], "utf8");
+    assert.match(script, /MINITRON_INSTALL_DIR='\/opt\/Resolved Product'/);
+    assert.match(script, /MINITRON_EXECUTABLE_NAME='resolved-cli'/);
+    assert.match(options.fpm[index + 1], new RegExp(`${target}-before-remove\\.sh$`));
+  }
+});
+
+test("Linux afterPack rejects unsupported targets only for an actual Linux build", async (t) => {
+  const projectDir = makeTempDir();
+  t.after(() => fs.rmSync(projectDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(projectDir, "package.json"), JSON.stringify({ name: "test-app" }));
+  const config = withMinitron({
+    projectDir,
+    linux: { target: ["AppImage"] },
+  }, {
+    launcherPath: "unused",
+    projectDir,
+    manifestUrl: "https://updates.example.test/manifest.json",
+  });
+  assert.deepEqual(config.linux.target, ["AppImage"]);
+
+  const hook = createAfterPackHook(null, {
+    launcherPath: "unused",
+    projectDir,
+    manifestUrl: "https://updates.example.test/manifest.json",
+  });
+  await assert.rejects(hook({
+    electronPlatformName: "linux",
+    packager: {
+      projectDir,
+      config,
+      executableName: "test-app",
+      appInfo: { productName: "Test App" },
+      platformSpecificBuildOptions: { target: ["AppImage"] },
+    },
+    targets: [{ name: "appimage", options: {} }],
+  }), /supports only deb and rpm targets/);
 });
 
 async function makeFixture(t, platform = "win32", manifestOverrides = {}) {

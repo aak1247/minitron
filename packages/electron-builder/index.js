@@ -29,9 +29,14 @@ function withMinitron(config, options) {
     : resolveFromProject(requireString(options.installerIncludePath, "options.installerIncludePath"), projectDir);
   const userIncludes = config.nsis && config.nsis.include != null ? config.nsis.include : [];
   const includePath = composeInstallerInclude({ userIncludes, lifecycleIncludePath, projectDir });
+  const linuxConfig = isRecord(config.linux) ? { ...config.linux } : {};
+  if (linuxConfig.target === undefined) {
+    linuxConfig.target = ["deb", "rpm"];
+  }
 
   return {
     ...config,
+    linux: linuxConfig,
     nsis: {
       ...(isRecord(config.nsis) ? config.nsis : {}),
       include: includePath,
