@@ -147,10 +147,10 @@ pub fn fetch(cfg: &ShellConfig) -> Result<Manifest> {
 /// Return the build-time-pinned runtime artifact only for the exact runtime
 /// configured by this installation. It is validated by the same URL, size,
 /// and SHA rules used for artifacts inside an authenticated manifest.
-pub fn configured_runtime_artifact(
-    cfg: &ShellConfig,
+pub fn configured_runtime_artifact<'a>(
+    cfg: &'a ShellConfig,
     key: &RuntimeKey,
-) -> Result<Option<&Artifact>> {
+) -> Result<Option<&'a Artifact>> {
     let configured_key = RuntimeKey::current(&cfg.required_runtime);
     configured_key
         .validate()
