@@ -15,6 +15,14 @@ if (smokeMode) {
   // Hosted Windows runners may have no usable accelerated graphics device.
   // Smoke coverage exercises the real page, preload and IPC with software GPU.
   app.disableHardwareAcceleration();
+  app.on("child-process-gone", (_event, details) => {
+    console.error(`SMOKE_CHILD_PROCESS_GONE:${JSON.stringify(details)}`);
+  });
+  app.on("web-contents-created", (_event, contents) => {
+    contents.on("render-process-gone", (_event, details) => {
+      console.error(`SMOKE_RENDER_PROCESS_GONE:${JSON.stringify(details)}`);
+    });
+  });
   console.error("SMOKE_BOOTSTRAP: waiting for Electron and renderer readiness");
   smokeTimer = setTimeout(() => {
     console.error("Timed out waiting for Electron/renderer/preload IPC readiness");
