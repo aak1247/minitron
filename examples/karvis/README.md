@@ -30,6 +30,8 @@ export MINITRON_MAINTAINER="Your Name <you@company.com>"
 npx electron-builder --config electron-builder.config.cjs --linux --x64
 ```
 
+Linux package metadata also needs Karvis's homepage URL. electron-builder can infer it from the Git origin in a normal checkout; the Karvis snapshot omits `.git`, so set the correct `homepage` in `karvis-electron/package.json` when building from that snapshot.
+
 Install the DEB with `sudo apt install ./release/*.deb` or the RPM with `sudo dnf install ./release/*.rpm`. Package upgrades stop the previous app and retain its runtime registration; remove with `sudo apt remove <package>` or `sudo dnf remove <package>` to stop and unregister it.
 
 Build macOS x64 and arm64 separately with the matching v0.3.0 launcher. Existing electron-builder signing and notarization settings can be used for these builds; provide your own Apple signing identity and notarization credentials when required.

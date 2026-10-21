@@ -30,6 +30,8 @@ export MINITRON_MAINTAINER="你的名字 <you@company.com>"
 npx electron-builder --config electron-builder.config.cjs --linux --x64
 ```
 
+Linux 包元数据还需要 Karvis 的 homepage。普通 checkout 中 electron-builder 可以从 Git origin 推断；Karvis snapshot 不含 `.git`，因此从 snapshot 构建时请在 `karvis-electron/package.json` 中显式设置正确的 `homepage`。
+
 Debian 使用 `sudo apt install ./release/*.deb` 安装，RPM 使用 `sudo dnf install ./release/*.rpm`。包管理器升级会停止旧应用并保留运行时登记；使用 `sudo apt remove <软件包名>` 或 `sudo dnf remove <软件包名>` 卸载时会停止应用并注销登记。
 
 macOS x64 和 arm64 必须分别使用匹配的 v0.3.0 启动器构建。可以使用 electron-builder 现有的签名与公证配置；需要分发签名或公证版本时，请提供自己的 Apple 签名身份和公证凭据。
