@@ -594,8 +594,13 @@ fn sign_macos_host(bundle: &Path) -> Result<()> {
 fn verify_macos_host_signature(bundle: &Path) -> Result<()> {
     use std::process::Command;
 
+    // This per-user host deliberately links the shared runtime and app resources
+    // from outside its bundle. `codesign --strict` rejects those valid external
+    // symlink destinations as a non-self-contained bundle. Keep normal signature
+    // verification here; the distributed installed app remains builder-signed
+    // and is verified under its normal strict signing policy.
     let output = Command::new("/usr/bin/codesign")
-        .args(["--verify", "--strict"])
+        .arg("--verify")
         .arg(bundle)
         .output()
         .context("start branded runtime host signature verification")?;
