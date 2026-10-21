@@ -224,6 +224,12 @@ try {
       ]);
       assert.equal(hostFile.dev, sharedFile.dev);
       assert.equal(hostFile.ino, sharedFile.ino, 'framework files must share storage with the runtime');
+      const hostExecutable = path.join(path.dirname(path.dirname(hostFramework)), 'MacOS/myapp');
+      const firstHost = await fs.stat(hostExecutable, { bigint: true });
+      assert.equal(smoke(await run(executable, ['--offline']), false).appVersion, '1.0.0');
+      const reusedHost = await fs.stat(hostExecutable, { bigint: true });
+      assert.equal(reusedHost.ino, firstHost.ino, 'repeated launch must reuse the signed host');
+      assert.equal(reusedHost.birthtimeNs, firstHost.birthtimeNs, 'repeated launch must not recreate the signed host');
       await run(executable, ['--uninstall']);
       assert.equal(await exists(updates), false, 'uninstall must remove the private host state');
       assert(await exists(runtimePath(cache, options['runtime-version'])), 'other installations must retain the shared runtime');
