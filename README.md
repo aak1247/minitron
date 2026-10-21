@@ -4,16 +4,59 @@
 
 **English** | [简体中文](README.zh-CN.md) · [Downloads](https://github.com/aak1247/minitron/releases/latest)
 
-minitron packages Electron apps separately from their runtime. Apps ship with a small native launcher and reuse the same Electron installation, reducing repeated runtime downloads and app update sizes.
+Minitron packages Electron apps separately from their runtime. Your app ships with a small native launcher and reuses the same Electron installation as other apps using that version.
 
 - App-only ASAR packages, including native modules.
 - Shared runtimes with resumable downloads and automatic cleanup.
 - Background updates and rollback to the previous app version.
 - English and Chinese, selected from the system display language.
 
-Available for **Windows x64, Linux x64, and macOS Intel / Apple Silicon**. Electron downloads on the first app launch and is shared by apps using the same version.
+Available for **Windows x64, Linux x64, and macOS Intel / Apple Silicon**.
 
 ![minitron launcher](docs/images/launcher-en.png)
+
+## Quick start
+
+Run these commands from your existing Electron project. Skip the build step if the app is already compiled.
+
+```sh
+npm install --save-dev minitron-builder
+npm run build
+npx minitron-builder
+```
+
+The CLI reads your existing `electron-builder` config or `package.json` `build` field, then downloads the matching Minitron launcher. It uses your normal `appId`, `productName`, icon, files, `extraResources`, `asarUnpack`, and installer settings. Electron development stays unchanged.
+
+Here is a minimal three-platform `package.json` configuration:
+
+```json
+{
+  "homepage": "https://example.com/my-app",
+  "author": { "name": "Example", "email": "packaging@example.com" },
+  "build": {
+    "appId": "com.example.desktop",
+    "productName": "Example Desktop",
+    "asar": true,
+    "directories": { "output": "release" },
+    "win": { "target": ["nsis"], "icon": "build/app.ico" },
+    "linux": { "target": ["deb", "rpm"], "icon": "build/app.png" },
+    "mac": { "target": ["dmg", "pkg"], "icon": "build/app.png" }
+  }
+}
+```
+
+`npx minitron-builder` targets the current platform by default. Select another package format when needed:
+
+```sh
+npx minitron-builder --win nsis
+npx minitron-builder --linux deb rpm
+npx minitron-builder --mac dmg pkg --x64
+npx minitron-builder --mac dmg pkg --arm64
+```
+
+Build macOS x64 and arm64 packages separately. Linux DEB/RPM builds also need a `homepage` and a real maintainer email in your package metadata or Linux build settings. Output goes to `build.directories.output`, or to `dist` if no output directory is configured.
+
+No update server is needed for the first launch: the installed app downloads its shared Electron runtime from the official Electron distribution. You can add app updates from a manifest later; see the [update guide](docs/usage.md#publishing-updates). On macOS, run the included `minitron-uninstall.command` before deleting the app.
 
 ## Package size
 
@@ -38,57 +81,12 @@ Karvis AI 2.0.0 installers on Linux and macOS (Electron 28.3.3, shared runtime d
 | macOS Intel | PKG / DMG | 12.79 / 14.24 MiB |
 | macOS Apple Silicon | PKG / DMG | 12.55 / 13.98 MiB |
 
-## Install
+## Advanced use
 
-Download a [prebuilt binary](https://github.com/aak1247/minitron/releases/latest), or install the latest launcher with a script. No Rust toolchain is needed.
+For portable app directories or separate launcher installation, see the [packaging guide](docs/usage.md#packaging-an-app). You can also install the launcher directly from a [prebuilt release](https://github.com/aak1247/minitron/releases/latest).
 
-### Windows
+Linux requires a desktop environment with glibc 2.35+, fontconfig, X11 or Wayland, and xkbcommon. On Ubuntu 22.04+, launcher dependencies can be installed with `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6`; Electron also needs GTK3, notifications, NSS, audio and GBM libraries.
 
-```powershell
-Invoke-WebRequest https://github.com/aak1247/minitron/releases/latest/download/install.ps1 -OutFile "$env:TEMP/minitron-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP/minitron-install.ps1" -InstallDir ./minitron-bin
-./minitron-bin/minitron.exe --help
-```
-
-### Linux / macOS
-
-```sh
-curl -fsSL https://github.com/aak1247/minitron/releases/latest/download/install.sh -o /tmp/minitron-install.sh
-sh /tmp/minitron-install.sh --dir ./minitron-bin
-./minitron-bin/minitron --help
-```
-
-The scripts select the native binary and check its SHA-256 checksum. Use `-Version v0.3.0` on Windows or `--version v0.3.0` on Linux/macOS to select a release. Existing app configuration and resources are preserved.
-
-Linux requires a desktop environment with glibc 2.35+, fontconfig, X11 or Wayland, and xkbcommon. On Ubuntu 22.04+, install the launcher dependencies with `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6`. Electron also needs GTK3, notifications, NSS, audio and GBM desktop libraries; on Ubuntu 22.04, install `libgtk-3-0 libnotify4 libnss3 libasound2 libgbm1`.
-
-## Package an app
-
-### electron-builder
-
-Use the [Minitron adapter](packages/electron-builder/README.md) with your existing electron-builder configuration to produce Windows NSIS, Linux DEB/RPM, and macOS DMG/PKG packages with your app's name, icon and system shortcuts. Your regular Electron and Node.js development flow remains unchanged.
-
-See the [copyable electron-builder configuration](examples/electron-builder/README.md) and the [Karvis integration example](examples/karvis/README.md). macOS apps include a manual `minitron-uninstall.command`; dragging an app to Trash does not run it.
-
-### Portable app directory
-
-Install Node.js 22.12+ and follow the [packaging guide](docs/usage.md#packaging-an-app). The Windows and Linux/macOS scripts use a prebuilt launcher to produce:
-
-```text
-application/
-  minitron.exe         # minitron on Linux/macOS
-  minitron.toml
-  resources/
-    app.asar
-    app.asar.unpacked/ # when needed
-```
-
-Distribute this directory to users. Open `minitron.exe` on Windows or run `./minitron` on Linux/macOS. App updates download in the background and activate on the next launch. The update ZIP contains only app resources.
-
-A Windows installer is also available through the [NSIS packaging script](docs/usage.md#windows-installer).
-
-## Language
+See the [copyable electron-builder example](examples/electron-builder/README.md), the [Karvis integration example](examples/karvis/README.md), or the [usage guide](docs/usage.md) for advanced configuration and update publishing.
 
 The launcher follows the system display language: Simplified Chinese for Chinese systems, English otherwise. Override it with `MINITRON_LANG=en`, `zh` or `auto`.
-
-See the [usage guide](docs/usage.md) for configuration, signed updates and launcher options.

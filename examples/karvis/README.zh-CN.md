@@ -1,52 +1,42 @@
 # Karvis AI 接入 Minitron
 
-此示例扩展现有 `karvis-electron` 打包配置，不修改 Karvis 项目本身。它保留应用标识、文件、图标和 `assets/` 资源，并配置 Windows NSIS、Linux DEB/RPM、macOS DMG/PKG。Minitron 和应用图标均使用 Karvis 现有的 `assets/icon.png`。
+此示例打包现有 `karvis-electron` 应用，不修改其源代码。应用保留 Karvis 名称、图标和资源；Minitron 提供轻量启动器，并在首次启动时下载 Electron。
 
-在 Karvis 项目中安装 electron-builder 24.13.3 和适配器：
+在 `karvis-electron` 项目目录安装 CLI 并构建应用：
 
 ```sh
-npm install --save-dev electron-builder@24.13.3 https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-electron-builder-0.3.0.tgz
-```
-
-将 `electron-builder.config.cjs` 复制到 `karvis-electron/`。配置会扩展应用 `package.json` 的 `build`，保留 `files`、`extraResources`、`extraMetadata` 和平台设置，并将打包入口设为 `dist/main/index.js`。请保持 ASAR 启用。
-
-安装与目标平台、架构匹配的 v0.3.0 启动器。从 `karvis-electron` 项目目录构建 Windows：
-
-可按照 [Minitron 安装指南](../../README.zh-CN.md#安装)使用对应平台的安装脚本，并将启动器安装到 `.minitron`。
-
-```powershell
-$env:MINITRON_LAUNCHER = (Resolve-Path ./.minitron/minitron.exe).Path
-$env:MINITRON_MANIFEST_URL = "https://updates.example.com/karvis/manifest.json"
+npm install -D minitron-builder
 npm run build
-npx electron-builder --config electron-builder.config.cjs --win nsis
+npx minitron-builder
 ```
 
-Linux DEB/RPM 必须使用真实维护者邮箱。示例优先使用 `MINITRON_MAINTAINER`，否则读取 `package.json` 中 `author` 的邮箱。两处都没有邮箱时，请在 Linux 构建前设置环境变量：
+应用已编译时可跳过 `npm run build`。在 electron-builder 配置中保留现有应用标识和图标，并启用 ASAR。Karvis 的资源布局还需在现有 `build` 配置中设置应用入口和资源：
+
+```json
+{
+  "extraMetadata": { "main": "dist/main/index.js" },
+  "extraResources": [
+    { "from": "assets", "to": "assets", "filter": ["**/*"] }
+  ],
+  "asar": true
+}
+```
+
+将这些字段合并到现有 `build` 对象，并保留其他打包设置。`extraResources` 会把 `assets/` 安装到 `app.asar` 旁边。可选的 [`electron-builder.config.cjs`](electron-builder.config.cjs) 展示等价的底层适配器配置。
+
+CLI 默认构建当前平台。需要时可指定安装包格式：
 
 ```sh
-export MINITRON_LAUNCHER="$PWD/.minitron/minitron"
-export MINITRON_MANIFEST_URL="https://updates.example.com/karvis/manifest.json"
-export MINITRON_MAINTAINER="你的名字 <you@company.com>"
-npx electron-builder --config electron-builder.config.cjs --linux --x64
+npx minitron-builder --win nsis
+npx minitron-builder --linux deb rpm
+npx minitron-builder --mac dmg pkg --x64
+npx minitron-builder --mac dmg pkg --arm64
 ```
 
-Linux DEB/RPM 包还需要主页 URL。请在应用的 `package.json` 中设置 `homepage`，或由 electron-builder 从 Git origin 推断。
+macOS x64 与 arm64 需分别构建。Linux DEB/RPM 需要主页 URL 和应用元数据或 Linux 设置中的真实维护者邮箱。产物写入配置的 `directories.output`，未配置时默认为 `dist`。
 
-Debian 使用 `sudo apt install ./release/*.deb` 安装，RPM 使用 `sudo dnf install ./release/*.rpm`。包管理器升级会停止旧应用并保留运行时登记；使用 `sudo apt remove <软件包名>` 或 `sudo dnf remove <软件包名>` 卸载时会停止应用并注销登记。
+Windows 使用 NSIS，Linux 使用 DEB/RPM，macOS 使用 DMG/PKG。通过常规安装器或“应用程序”目录安装，然后从原有快捷方式启动 Karvis AI。Minitron 首次启动时会下载匹配的 Electron 运行时；开始使用不需要应用更新服务器，之后可选配 manifest。`extraResources` 不包含在 Minitron 应用更新归档中，`electron-updater` 也不会自动接入。
 
-macOS x64 和 arm64 必须分别使用匹配的 v0.3.0 启动器构建。可以使用 electron-builder 现有的签名与公证配置；需要分发签名或公证版本时，请提供自己的 Apple 签名身份和公证凭据。
+卸载 macOS 应用前，请在终端运行 `"/Applications/Karvis AI.app/Contents/Resources/minitron-uninstall.command"`。将应用拖进废纸篓不会运行该脚本。
 
-```sh
-export MINITRON_MANIFEST_URL="https://updates.example.com/karvis/manifest.json"
-export MINITRON_LAUNCHER="$PWD/.minitron/minitron"
-npx electron-builder --config electron-builder.config.cjs --mac --x64
-
-export MINITRON_LAUNCHER="$PWD/.minitron/minitron" # 构建前将匹配的 arm64 启动器放到此路径
-npx electron-builder --config electron-builder.config.cjs --mac --arm64
-```
-
-打开 DMG 并将 Karvis AI 拖到“应用程序”，或运行 PKG 安装器。PKG 升级会先停止正在运行的应用。卸载前请在终端运行 `"/Applications/Karvis AI.app/Contents/Resources/minitron-uninstall.command"`，然后从“应用程序”移除 Karvis AI。将应用拖进废纸篓不会自动运行脚本。
-
-`assets/` 会安装在 `app.asar` 旁边，但 Minitron 应用更新只包含 `app.asar` 和 `app.asar.unpacked`。需随应用更新的文件放入 ASAR，或单独分发外部资源更新。`electron-updater` 不会自动接入 Minitron manifest。
-
-完整平台说明见[适配器指南](../../packages/electron-builder/README.md)和[通用示例](../electron-builder/README.zh-CN.md)。
+支持目标和更新边界见[适配器指南](../../packages/electron-builder/README.md)和[通用 electron-builder 示例](../electron-builder/README.zh-CN.md)。

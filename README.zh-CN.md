@@ -4,16 +4,59 @@
 
 [English](README.md) | **简体中文** · [下载](https://github.com/aak1247/minitron/releases/latest)
 
-minitron 将 Electron 应用与运行时分开打包。应用只携带一个轻量原生启动器，多个应用可复用同一份 Electron，减少重复下载和应用更新体积。
+minitron 将 Electron 应用与运行时分开打包。应用安装包包含轻量原生启动器，多个应用可复用同一份 Electron 运行时。
 
 - 仅包含应用的 ASAR 包，支持原生模块。
 - 共享运行时、断点续传和自动清理。
 - 后台更新与上一版本回滚。
 - 根据系统显示语言自动选择中文或英文。
 
-支持 **Windows x64、Linux x64、macOS Intel / Apple Silicon**。首次启动应用时下载 Electron，使用相同版本的应用共享运行时。
+支持 **Windows x64、Linux x64、macOS Intel / Apple Silicon**。
 
 ![minitron 启动器](docs/images/launcher-zh.png)
+
+## 快速开始
+
+在现有 Electron 项目目录中运行。项目已编译时可跳过 `npm run build`。
+
+```sh
+npm install -D minitron-builder
+npm run build
+npx minitron-builder
+```
+
+CLI 会读取现有 electron-builder 配置或 `package.json` 中的 `build`，并下载匹配平台和架构的 Minitron 启动器。普通的 Electron 开发流程不变；应用仍使用 electron-builder 中已有的 `appId`、`productName`、图标、文件、`extraResources`、`asarUnpack` 和安装选项。
+
+下面是覆盖三个平台的简短 `package.json` 示例：
+
+```json
+{
+  "homepage": "https://example.com/my-app",
+  "author": { "name": "Example", "email": "packaging@example.com" },
+  "build": {
+    "appId": "com.example.desktop",
+    "productName": "Example Desktop",
+    "asar": true,
+    "directories": { "output": "release" },
+    "win": { "target": ["nsis"], "icon": "build/app.ico" },
+    "linux": { "target": ["deb", "rpm"], "icon": "build/app.png" },
+    "mac": { "target": ["dmg", "pkg"], "icon": "build/app.png" }
+  }
+}
+```
+
+默认目标是当前平台。需要时可指定格式：
+
+```sh
+npx minitron-builder --win nsis
+npx minitron-builder --linux deb rpm
+npx minitron-builder --mac dmg pkg --x64
+npx minitron-builder --mac dmg pkg --arm64
+```
+
+macOS x64 与 arm64 需分别构建。Linux DEB/RPM 需要 `homepage` 和有效维护者邮箱。产物写入 `build.directories.output` 指定的目录；未配置时写入 `dist`。
+
+首次启动不需要更新服务器：应用会从 Electron 官方分发源下载共享运行时。应用内更新可稍后添加 manifest，见[更新指南](docs/usage.zh-CN.md#发布更新)。macOS 卸载前请在终端运行应用内的 `minitron-uninstall.command`；拖到废纸篓不会自动运行卸载脚本。
 
 ## 包体积
 
@@ -38,57 +81,12 @@ Karvis AI 2.0.0 的 Linux 与 macOS 安装包（Electron 28.3.3，共享运行�
 | macOS Intel | PKG / DMG | 12.79 / 14.24 MiB |
 | macOS Apple Silicon | PKG / DMG | 12.55 / 13.98 MiB |
 
-## 安装
+## 高级用法
 
-直接下载[预编译二进制](https://github.com/aak1247/minitron/releases/latest)，或用脚本安装最新启动器，无需 Rust 工具链。
+便携应用目录和单独安装启动器见[打包指南](docs/usage.zh-CN.md#打包应用)，也可从[预编译版本](https://github.com/aak1247/minitron/releases/latest)手动安装启动器。
 
-### Windows
+Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖；Electron 还需要 GTK3、通知、NSS、音频和 GBM 等桌面库。
 
-```powershell
-Invoke-WebRequest https://github.com/aak1247/minitron/releases/latest/download/install.ps1 -OutFile "$env:TEMP/minitron-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP/minitron-install.ps1" -InstallDir ./minitron-bin
-./minitron-bin/minitron.exe --help
-```
-
-### Linux / macOS
-
-```sh
-curl -fsSL https://github.com/aak1247/minitron/releases/latest/download/install.sh -o /tmp/minitron-install.sh
-sh /tmp/minitron-install.sh --dir ./minitron-bin
-./minitron-bin/minitron --help
-```
-
-脚本自动选择当前平台的二进制并校验 SHA-256。Windows 可用 `-Version v0.3.0`、Linux/macOS 可用 `--version v0.3.0` 指定版本。已有应用配置和资源会保留。
-
-Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖，Electron 还需要 GTK3、通知、NSS、音频和 GBM 等桌面库；在 Ubuntu 22.04 上可安装 `libgtk-3-0 libnotify4 libnss3 libasound2 libgbm1`。
-
-## 打包应用
-
-### electron-builder
-
-通过 [Minitron 适配器](packages/electron-builder/README.md)包装现有 electron-builder 配置，可生成 Windows NSIS、Linux DEB/RPM 和 macOS DMG/PKG 安装包，保留应用名称、图标和系统入口。日常 Electron 和 Node.js 开发流程保持不变。
-
-参见[通用 electron-builder 配置](examples/electron-builder/README.zh-CN.md)和[Karvis 接入示例](examples/karvis/README.zh-CN.md)。macOS 应用包含手动运行的 `minitron-uninstall.command`；将应用拖入废纸篓不会自动执行该脚本。
-
-### 便携应用目录
-
-安装 Node.js 22.12+，然后按[打包指南](docs/usage.zh-CN.md#打包应用)操作。Windows 和 Linux/macOS 脚本使用预编译启动器，生成以下目录：
-
-```text
-application/
-  minitron.exe         # Linux/macOS 下为 minitron
-  minitron.toml
-  resources/
-    app.asar
-    app.asar.unpacked/ # 按需生成
-```
-
-将此目录分发给用户。Windows 打开 `minitron.exe`，Linux/macOS 运行 `./minitron`。应用更新在后台下载，下次启动时生效；更新 ZIP 只包含应用资源。
-
-Windows 还可通过 [NSIS 打包脚本](docs/usage.zh-CN.md#windows-安装包)生成安装程序。
-
-## 语言
+参见[通用 electron-builder 示例](examples/electron-builder/README.zh-CN.md)、[Karvis 接入示例](examples/karvis/README.zh-CN.md)和[使用指南](docs/usage.zh-CN.md)。
 
 启动器跟随系统显示语言：中文系统使用简体中文，其他语言使用英语。可通过 `MINITRON_LANG=en`、`zh` 或 `auto` 手动指定。
-
-配置、签名更新和启动参数见[使用指南](docs/usage.zh-CN.md)。
