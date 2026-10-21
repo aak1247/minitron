@@ -49,6 +49,10 @@ jobs:
       - name: Install app tooling
         working-directory: app
         run: npm ci --no-audit --no-fund
+      - name: Install electron-builder adapter tools
+        run: npm --prefix packages/electron-builder ci --ignore-scripts --no-audit --no-fund
+      - name: Test electron-builder adapter
+        run: npm --prefix packages/electron-builder test
       - name: Test app packaging
         working-directory: app
         run: npm test
