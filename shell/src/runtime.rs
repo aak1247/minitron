@@ -430,15 +430,23 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
         info_plist.is_file(),
         "installed macOS app is missing Contents/Info.plist"
     );
-    let executable_name =
-        plist_string_value(&std::fs::read_to_string(&info_plist)?, "CFBundleExecutable")
-            .or_else(|| {
-                std::env::current_exe()
-                    .ok()?
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-            .context("cannot determine the app bundle's CFBundleExecutable")?;
+    let installed_plist = std::fs::read_to_string(&info_plist)?;
+    let executable_name = plist_string_value(&installed_plist, "CFBundleExecutable")
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()?
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .context("cannot determine the app bundle's CFBundleExecutable")?;
+    let product_name = plist_string_value(&installed_plist, "CFBundleName")
+        .context("cannot determine the app bundle's CFBundleName")?;
+    let helper_bundle_name = sanitize_macos_bundle_name(&product_name)?;
+    let display_name = product_name;
+    let bundle_identifier = plist_string_value(&installed_plist, "CFBundleIdentifier")
+        .context("cannot determine the app bundle's CFBundleIdentifier")?;
+    let bundle_version = plist_string_value(&installed_plist, "CFBundleVersion")
+        .unwrap_or_else(|| release.app_version.clone());
     let icon_file = cfg.resources_dir()?.join("icon.icns");
     let icon_hash = if icon_file.is_file() {
         sha256_file(&icon_file)?
@@ -457,6 +465,10 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
         runtime_executable.is_file(),
         "shared Electron executable is missing"
     );
+    let runtime_plist = std::fs::read_to_string(runtime_contents.join("Info.plist"))
+        .context("read shared Electron Info.plist")?;
+    let runtime_bundle_name =
+        plist_string_value(&runtime_plist, "CFBundleName").unwrap_or_else(|| "Electron".to_owned());
     let runtime_executable_hash = sha256_file(&runtime_executable)?;
     let bundle_name = installed_bundle
         .file_name()
@@ -481,15 +493,34 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
     let host_info_plist = host_bundle.join("Contents/Info.plist");
     let host_resources = host_bundle.join("Contents/Resources");
     let active_asar = release.resources_dir.join("app.asar");
+    let runtime_frameworks = runtime_contents.join("Frameworks");
+    let host_frameworks = host_bundle.join("Contents/Frameworks");
+    let helper_layout_matches = macos_host_helper_layout_matches(
+        &runtime_contents,
+        &host_bundle.join("Contents"),
+        &runtime_bundle_name,
+        &helper_bundle_name,
+        &display_name,
+        &bundle_identifier,
+        &bundle_version,
+    )
+    .unwrap_or(false);
     let reusable = std::fs::symlink_metadata(&host_executable)
         .is_ok_and(|metadata| metadata.file_type().is_file())
         && host_info_plist.is_file()
         && std::fs::read(&host_info_plist).ok() == std::fs::read(&info_plist).ok()
         && host_resources.join("app.asar").canonicalize().ok() == active_asar.canonicalize().ok()
-        && std::fs::read_link(host_bundle.join("Contents/Frameworks"))
+        && std::fs::symlink_metadata(&host_frameworks)
+            .is_ok_and(|metadata| metadata.file_type().is_dir())
+        && std::fs::read_link(host_frameworks.join("Electron Framework.framework"))
             .ok()
             .as_deref()
-            == Some(runtime_contents.join("Frameworks").as_path());
+            == Some(
+                runtime_frameworks
+                    .join("Electron Framework.framework")
+                    .as_path(),
+            )
+        && helper_layout_matches;
     if reusable && verify_macos_host_signature(&host_bundle).is_ok() {
         return Ok(host_executable);
     }
@@ -503,12 +534,21 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
     std::fs::create_dir_all(&host_resources)?;
 
     std::fs::copy(&info_plist, host_contents.join("Info.plist"))?;
-    for directory in ["Frameworks", "PlugIns", "XPCServices", "SharedFrameworks"] {
+    for directory in ["PlugIns", "XPCServices", "SharedFrameworks"] {
         let source = runtime_contents.join(directory);
         if source.exists() {
             symlink(source, host_contents.join(directory))?;
         }
     }
+    create_macos_host_helper_layout(
+        &runtime_contents,
+        &host_contents,
+        &runtime_bundle_name,
+        &helper_bundle_name,
+        &display_name,
+        &bundle_identifier,
+        &bundle_version,
+    )?;
     let copied_executable = host_macos.join(&executable_name);
     std::fs::copy(&runtime_executable, &copied_executable)
         .context("copy Electron executable into branded runtime host")?;
@@ -568,12 +608,487 @@ fn verify_macos_host_signature(bundle: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+fn create_macos_host_helper_layout(
+    runtime_contents: &Path,
+    host_contents: &Path,
+    runtime_bundle_name: &str,
+    helper_bundle_name: &str,
+    display_name: &str,
+    bundle_identifier: &str,
+    bundle_version: &str,
+) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let runtime_frameworks = runtime_contents.join("Frameworks");
+    let host_frameworks = host_contents.join("Frameworks");
+    std::fs::create_dir_all(&host_frameworks)?;
+    let mut found_default_helper = false;
+    for entry in std::fs::read_dir(&runtime_frameworks)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            bail!("Electron Frameworks contains a non-UTF-8 entry name");
+        };
+        let source = entry.path();
+        if let Some(suffix) = macos_helper_suffix(name_text, runtime_bundle_name) {
+            if !entry.metadata()?.is_dir() {
+                bail!(
+                    "Electron helper bundle is not a directory: {}",
+                    source.display()
+                );
+            }
+            found_default_helper |= suffix == " Helper";
+            let branded_name = format!("{helper_bundle_name}{suffix}.app");
+            create_macos_branded_helper(
+                &source,
+                &host_frameworks.join(branded_name),
+                helper_bundle_name,
+                display_name,
+                bundle_identifier,
+                bundle_version,
+                &suffix,
+                false,
+            )?;
+        } else {
+            symlink(source, host_frameworks.join(name))?;
+        }
+    }
+    ensure!(
+        found_default_helper,
+        "shared Electron runtime is missing its generic Helper.app bundle"
+    );
+
+    let runtime_login_items = runtime_contents.join("Library/LoginItems");
+    if runtime_login_items.exists() {
+        let host_login_items = host_contents.join("Library/LoginItems");
+        std::fs::create_dir_all(&host_login_items)?;
+        for entry in std::fs::read_dir(&runtime_login_items)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name_text) = name.to_str() else {
+                bail!("Electron LoginItems contains a non-UTF-8 entry name");
+            };
+            let source = entry.path();
+            if let Some(suffix) = macos_login_helper_suffix(name_text, runtime_bundle_name) {
+                if !entry.metadata()?.is_dir() {
+                    bail!(
+                        "Electron Login Helper is not a directory: {}",
+                        source.display()
+                    );
+                }
+                let branded_name = format!("{helper_bundle_name}{suffix}.app");
+                create_macos_branded_helper(
+                    &source,
+                    &host_login_items.join(branded_name),
+                    helper_bundle_name,
+                    display_name,
+                    bundle_identifier,
+                    bundle_version,
+                    &suffix,
+                    true,
+                )?;
+            } else {
+                symlink(source, host_login_items.join(name))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_helper_suffix(bundle_name: &str, runtime_bundle_name: &str) -> Option<String> {
+    let stem = bundle_name.strip_suffix(".app")?;
+    let suffix = stem.strip_prefix(runtime_bundle_name)?;
+    matches!(
+        suffix,
+        " Helper"
+            | " Helper EH"
+            | " Helper NP"
+            | " Helper (Renderer)"
+            | " Helper (Plugin)"
+            | " Helper (GPU)"
+    )
+    .then(|| suffix.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_login_helper_suffix(bundle_name: &str, runtime_bundle_name: &str) -> Option<String> {
+    let stem = bundle_name.strip_suffix(".app")?;
+    let suffix = stem.strip_prefix(runtime_bundle_name)?;
+    (suffix == " Login Helper").then(|| suffix.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn create_macos_branded_helper(
+    source_bundle: &Path,
+    destination_bundle: &Path,
+    helper_bundle_name: &str,
+    display_name: &str,
+    bundle_identifier: &str,
+    bundle_version: &str,
+    suffix: &str,
+    login_helper: bool,
+) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let source_contents = source_bundle.join("Contents");
+    let source_info = source_contents.join("Info.plist");
+    let source_plist = std::fs::read_to_string(&source_info)
+        .with_context(|| format!("read Electron helper plist {}", source_info.display()))?;
+    let source_executable = plist_string_value(&source_plist, "CFBundleExecutable")
+        .context("Electron helper Info.plist has no CFBundleExecutable")?;
+    ensure!(
+        !source_executable.is_empty()
+            && !source_executable.contains('/')
+            && !source_executable.contains('\\'),
+        "invalid CFBundleExecutable in Electron helper Info.plist"
+    );
+    let executable_name = format!("{helper_bundle_name}{suffix}");
+    let mut branded_plist = source_plist;
+    branded_plist = set_plist_string_value(&branded_plist, "CFBundleExecutable", &executable_name)?;
+    branded_plist = set_plist_string_value(
+        &branded_plist,
+        "CFBundleDisplayName",
+        &format!("{display_name}{suffix}"),
+    )?;
+    branded_plist = set_plist_string_value(
+        &branded_plist,
+        "CFBundleIdentifier",
+        &macos_helper_bundle_identifier(bundle_identifier, suffix, login_helper),
+    )?;
+    branded_plist = set_plist_string_value(&branded_plist, "CFBundleVersion", bundle_version)?;
+
+    let destination_contents = destination_bundle.join("Contents");
+    let destination_macos = destination_contents.join("MacOS");
+    std::fs::create_dir_all(&destination_macos)?;
+    let mut copied_info = false;
+    let mut copied_executable = false;
+    for entry in std::fs::read_dir(&source_contents)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            bail!("Electron helper Contents contains a non-UTF-8 entry name");
+        };
+        let source = entry.path();
+        if name_text == "Info.plist" {
+            std::fs::write(destination_contents.join(name), &branded_plist)?;
+            copied_info = true;
+        } else if name_text == "MacOS" {
+            for executable in std::fs::read_dir(&source)? {
+                let executable = executable?;
+                let executable_name_os = executable.file_name();
+                let Some(executable_name_text) = executable_name_os.to_str() else {
+                    bail!("Electron helper MacOS contains a non-UTF-8 entry name");
+                };
+                let target = destination_macos.join(&executable_name_os);
+                if executable_name_text == source_executable {
+                    std::fs::copy(executable.path(), destination_macos.join(&executable_name))
+                        .context("copy Electron helper executable into branded helper bundle")?;
+                    copied_executable = true;
+                } else {
+                    symlink(executable.path(), target)?;
+                }
+            }
+        } else if name_text != "_CodeSignature" {
+            symlink(source, destination_contents.join(name))?;
+        }
+    }
+    ensure!(
+        copied_info,
+        "Electron helper bundle is missing Contents/Info.plist"
+    );
+    ensure!(
+        copied_executable,
+        "Electron helper executable listed in Info.plist was not found"
+    );
+    sign_macos_host(destination_bundle)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_helper_bundle_identifier(
+    bundle_identifier: &str,
+    suffix: &str,
+    login_helper: bool,
+) -> String {
+    if login_helper {
+        return filter_macos_bundle_identifier(&format!("{bundle_identifier}.loginhelper"));
+    }
+    let helper_identifier = format!("{bundle_identifier}.helper");
+    let component = suffix.strip_prefix(" Helper").unwrap_or_default().trim();
+    if component.is_empty() {
+        filter_macos_bundle_identifier(&helper_identifier)
+    } else {
+        filter_macos_bundle_identifier(&format!("{helper_identifier}.{component}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn filter_macos_bundle_identifier(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| if character == ' ' { '-' } else { character })
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_host_helper_layout_matches(
+    runtime_contents: &Path,
+    host_contents: &Path,
+    runtime_bundle_name: &str,
+    helper_bundle_name: &str,
+    display_name: &str,
+    bundle_identifier: &str,
+    bundle_version: &str,
+) -> Result<bool> {
+    use std::collections::BTreeSet;
+
+    let runtime_frameworks = runtime_contents.join("Frameworks");
+    let host_frameworks = host_contents.join("Frameworks");
+    if !runtime_frameworks.is_dir() || !host_frameworks.is_dir() {
+        return Ok(false);
+    }
+    let mut expected_framework_entries = BTreeSet::new();
+    for entry in std::fs::read_dir(&runtime_frameworks)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            return Ok(false);
+        };
+        let source = entry.path();
+        let destination_name =
+            if let Some(suffix) = macos_helper_suffix(name_text, runtime_bundle_name) {
+                let branded_name = format!("{helper_bundle_name}{suffix}.app");
+                if !macos_branded_helper_matches(
+                    &source,
+                    &host_frameworks.join(&branded_name),
+                    helper_bundle_name,
+                    display_name,
+                    bundle_identifier,
+                    bundle_version,
+                    &suffix,
+                    false,
+                )? {
+                    return Ok(false);
+                }
+                std::ffi::OsString::from(branded_name)
+            } else {
+                let destination = host_frameworks.join(&name);
+                if std::fs::read_link(&destination).ok().as_deref() != Some(source.as_path()) {
+                    return Ok(false);
+                }
+                name
+            };
+        expected_framework_entries.insert(destination_name);
+    }
+    if directory_entry_names(&host_frameworks)? != expected_framework_entries {
+        return Ok(false);
+    }
+
+    let runtime_login_items = runtime_contents.join("Library/LoginItems");
+    let host_login_items = host_contents.join("Library/LoginItems");
+    if !runtime_login_items.exists() {
+        return Ok(!host_contents.join("Library").exists());
+    }
+    if !host_login_items.is_dir() {
+        return Ok(false);
+    }
+    let mut expected_login_entries = BTreeSet::new();
+    for entry in std::fs::read_dir(&runtime_login_items)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            return Ok(false);
+        };
+        let source = entry.path();
+        let destination_name =
+            if let Some(suffix) = macos_login_helper_suffix(name_text, runtime_bundle_name) {
+                let branded_name = format!("{helper_bundle_name}{suffix}.app");
+                if !macos_branded_helper_matches(
+                    &source,
+                    &host_login_items.join(&branded_name),
+                    helper_bundle_name,
+                    display_name,
+                    bundle_identifier,
+                    bundle_version,
+                    &suffix,
+                    true,
+                )? {
+                    return Ok(false);
+                }
+                std::ffi::OsString::from(branded_name)
+            } else {
+                let destination = host_login_items.join(&name);
+                if std::fs::read_link(&destination).ok().as_deref() != Some(source.as_path()) {
+                    return Ok(false);
+                }
+                name
+            };
+        expected_login_entries.insert(destination_name);
+    }
+    Ok(directory_entry_names(&host_login_items)? == expected_login_entries)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_branded_helper_matches(
+    source_bundle: &Path,
+    destination_bundle: &Path,
+    helper_bundle_name: &str,
+    display_name: &str,
+    bundle_identifier: &str,
+    bundle_version: &str,
+    suffix: &str,
+    login_helper: bool,
+) -> Result<bool> {
+    let source_contents = source_bundle.join("Contents");
+    let source_info = source_contents.join("Info.plist");
+    let source_plist = std::fs::read_to_string(&source_info)?;
+    let Some(source_executable) = plist_string_value(&source_plist, "CFBundleExecutable") else {
+        return Ok(false);
+    };
+    let executable_name = format!("{helper_bundle_name}{suffix}");
+    let expected_plist =
+        set_plist_string_value(&source_plist, "CFBundleExecutable", &executable_name)?;
+    let expected_plist = set_plist_string_value(
+        &expected_plist,
+        "CFBundleDisplayName",
+        &format!("{display_name}{suffix}"),
+    )?;
+    let expected_plist = set_plist_string_value(
+        &expected_plist,
+        "CFBundleIdentifier",
+        &macos_helper_bundle_identifier(bundle_identifier, suffix, login_helper),
+    )?;
+    let expected_plist =
+        set_plist_string_value(&expected_plist, "CFBundleVersion", bundle_version)?;
+    let destination_contents = destination_bundle.join("Contents");
+    if std::fs::read(destination_contents.join("Info.plist"))
+        .ok()
+        .as_deref()
+        != Some(expected_plist.as_bytes())
+    {
+        return Ok(false);
+    }
+    let source_executable_path = source_contents.join("MacOS").join(&source_executable);
+    let destination_executable_path = destination_contents.join("MacOS").join(&executable_name);
+    if !std::fs::symlink_metadata(&destination_executable_path)
+        .is_ok_and(|metadata| metadata.file_type().is_file())
+        || sha256_file(&source_executable_path)? != sha256_file(&destination_executable_path)?
+    {
+        return Ok(false);
+    }
+    Ok(verify_macos_host_signature(destination_bundle).is_ok())
+}
+
+#[cfg(target_os = "macos")]
+fn directory_entry_names(path: &Path) -> Result<std::collections::BTreeSet<std::ffi::OsString>> {
+    Ok(std::fs::read_dir(path)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<_>>()?)
+}
+
+#[cfg(target_os = "macos")]
+fn sanitize_macos_bundle_name(value: &str) -> Result<String> {
+    let sanitized = value
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(*character as u32, 0x80..=0x9f)
+                && !matches!(
+                    *character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+        })
+        .collect::<String>();
+    let mut sanitized = sanitized.trim_end_matches([' ', '.']).to_owned();
+    let reserved_name = sanitized
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if sanitized.chars().all(|character| character == '.')
+        || matches!(
+            reserved_name.as_str(),
+            "con"
+                | "prn"
+                | "aux"
+                | "nul"
+                | "com1"
+                | "com2"
+                | "com3"
+                | "com4"
+                | "com5"
+                | "com6"
+                | "com7"
+                | "com8"
+                | "com9"
+                | "lpt1"
+                | "lpt2"
+                | "lpt3"
+                | "lpt4"
+                | "lpt5"
+                | "lpt6"
+                | "lpt7"
+                | "lpt8"
+                | "lpt9"
+        )
+    {
+        sanitized.clear();
+    }
+    if sanitized.len() > 255 {
+        let mut end = 255;
+        while !sanitized.is_char_boundary(end) {
+            end -= 1;
+        }
+        sanitized.truncate(end);
+    }
+    ensure!(
+        !sanitized.is_empty() && sanitized != "." && sanitized != "..",
+        "invalid CFBundleName for helper bundle paths"
+    );
+    Ok(sanitized)
+}
+
+#[cfg(target_os = "macos")]
 fn plist_string_value(plist: &str, key: &str) -> Option<String> {
     let marker = format!("<key>{key}</key>");
     let rest = plist.split_once(&marker)?.1;
     let value = rest.split_once("<string>")?.1.split_once("</string>")?.0;
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_owned())
+    let value = value
+        .trim()
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    (!value.is_empty()).then_some(value)
+}
+
+#[cfg(target_os = "macos")]
+fn set_plist_string_value(plist: &str, key: &str, value: &str) -> Result<String> {
+    let marker = format!("<key>{key}</key>");
+    ensure!(
+        plist.matches(&marker).count() == 1,
+        "Electron helper Info.plist must contain exactly one {key} key"
+    );
+    let key_start = plist.find(&marker).unwrap() + marker.len();
+    let value_start = plist[key_start..]
+        .find("<string>")
+        .map(|offset| key_start + offset + "<string>".len())
+        .context("expected a string value in Electron helper Info.plist")?;
+    let value_end = plist[value_start..]
+        .find("</string>")
+        .map(|offset| value_start + offset)
+        .context("unterminated string in Electron helper Info.plist")?;
+    let escaped = value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let mut result = String::with_capacity(plist.len() + escaped.len());
+    result.push_str(&plist[..value_start]);
+    result.push_str(&escaped);
+    result.push_str(&plist[value_end..]);
+    Ok(result)
 }
 
 #[cfg(target_os = "macos")]
@@ -1443,6 +1958,41 @@ mod tests {
     fn key_id_round_trips() {
         let key = test_key();
         assert_eq!(parse_key_id(&key_id(&key)).unwrap(), Some(key));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_helper_names_and_info_plists_follow_builder_branding() {
+        let app_id = "com.example.karvis";
+        assert_eq!(
+            macos_helper_suffix("Electron Helper (Renderer).app", "Electron"),
+            Some(" Helper (Renderer)".to_owned())
+        );
+        assert_eq!(
+            macos_login_helper_suffix("Electron Login Helper.app", "Electron"),
+            Some(" Login Helper".to_owned())
+        );
+        assert_eq!(
+            macos_helper_bundle_identifier(app_id, " Helper (GPU)", false),
+            "com.example.karvis.helper.GPU"
+        );
+        assert_eq!(
+            macos_helper_bundle_identifier(app_id, " Login Helper", true),
+            "com.example.karvis.loginhelper"
+        );
+
+        let source = "<plist><dict><key>CFBundleExecutable</key><string>Electron Helper</string><key>CFBundleDisplayName</key><string>Electron Helper</string><key>CFBundleIdentifier</key><string>com.electron.helper</string><key>CFBundleVersion</key><string>1</string></dict></plist>";
+        let changed =
+            set_plist_string_value(source, "CFBundleDisplayName", "Karvis & Co Helper").unwrap();
+        assert!(changed.contains("<string>Karvis &amp; Co Helper</string>"));
+        assert_eq!(
+            plist_string_value(&changed, "CFBundleDisplayName").as_deref(),
+            Some("Karvis & Co Helper")
+        );
+        assert_eq!(
+            sanitize_macos_bundle_name("Karvis: AI. ").unwrap(),
+            "Karvis AI"
+        );
     }
 
     #[test]
