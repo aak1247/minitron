@@ -1,0 +1,104 @@
+name: npm builder integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      launcher_run:
+        description: Successful Native releases run with identical runtime sources
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: macos-15-intel
+            platform: macos-x64
+          - os: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+      - name: Install Linux launcher dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1 libxkbcommon0 libxkbcommon-x11-0
+      - name: Install adapter dependencies
+        run: npm --prefix packages/electron-builder ci --ignore-scripts --no-audit --no-fund
+      - name: Read native run provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFIED_RUN_ID: ${{ inputs.launcher_run }}
+        run: |
+          node -e 'if (!/^\d+$/.test(process.env.VERIFIED_RUN_ID)) throw new Error("Invalid native run id")'
+          mkdir -p dist
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$VERIFIED_RUN_ID" > dist/verified-run.json
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/verified-launcher
+          run-id: ${{ inputs.launcher_run }}
+          github-token: ${{ github.token }}
+      - name: Verify native source and archive integrity
+        run: node scripts/verify-tested-launcher.mjs dist/verified-launcher '${{ matrix.platform }}'
+      - name: Extract Windows launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Get-Content packages/electron-builder/package.json | ConvertFrom-Json).version
+          Expand-Archive -LiteralPath "dist/verified-launcher/minitron-v$version-windows-x64.zip" -DestinationPath dist/verified-launcher -Force
+      - name: Extract Unix launcher
+        if: runner.os != 'Windows'
+        run: |
+          version=$(node -p 'require("./packages/electron-builder/package.json").version')
+          tar -xzf "dist/verified-launcher/minitron-v$version-${{ matrix.platform }}.tar.gz" -C dist/verified-launcher
+      - name: Adapter unit tests
+        run: npm --prefix packages/electron-builder test
+      - name: Download verified Electron fixture
+        run: node scripts/download-e2e-runtimes.mjs dist/electron-zips 32.2.0
+      - name: Build an app using the npm tarball
+        run: node scripts/e2e-builder-cli.mjs --launcher "$PWD/dist/verified-launcher/minitron${{ runner.os == 'Windows' && '.exe' || '' }}"
+      - name: Save integration report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: builder-${{ matrix.platform }}
+          path: dist/e2e-builder-cli-report.json
+          if-no-files-found: warn
+
+  package:
+    needs: integration
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+      - name: Pack the verified npm package
+        run: |
+          mkdir -p dist/npm
+          npm pack ./packages/electron-builder --pack-destination dist/npm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: npm-package
+          path: dist/npm/*.tgz
+          if-no-files-found: error
