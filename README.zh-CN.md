@@ -2,7 +2,7 @@
 
 **更小的 Electron 应用包，共享同一份运行时。**
 
-[English](README.md) | **简体中文** · [下载](https://github.com/aak1247/minitron/releases/latest)
+[English](README.md) | **简体中文** · [下载](https://github.com/aak1247/minitron/releases/latest) · [npm](https://www.npmjs.com/package/minitron-builder)
 
 minitron 将 Electron 应用与运行时分开打包。应用安装包包含轻量原生启动器，多个应用可复用同一份 Electron 运行时。
 

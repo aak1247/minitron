@@ -2,7 +2,7 @@
 
 **Smaller Electron packages, shared runtime.**
 
-**English** | [简体中文](README.zh-CN.md) · [Downloads](https://github.com/aak1247/minitron/releases/latest)
+**English** | [简体中文](README.zh-CN.md) · [Downloads](https://github.com/aak1247/minitron/releases/latest) · [npm](https://www.npmjs.com/package/minitron-builder)
 
 Minitron packages Electron apps separately from their runtime. Your app ships with a small native launcher and reuses the same Electron installation as other apps using that version.
 
