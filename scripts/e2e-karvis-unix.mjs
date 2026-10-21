@@ -61,6 +61,9 @@ const diagnosticsDir = path.join(work, 'diagnostics');
 const markersDir = path.join(work, 'markers');
 const logsDir = path.join(work, 'logs');
 const peerRoot = path.join(work, 'installed', 'peer');
+const peerAppDir = process.platform === 'linux'
+  ? path.join(peerRoot, 'linux', 'Karvis AI')
+  : path.join(peerRoot, 'mac', `${productName}.app`);
 const targetUserData = path.join(work, 'user-data', 'target');
 const peerUserData = path.join(work, 'user-data', 'peer');
 const targetDiagnostic = path.join(diagnosticsDir, 'target.json');
@@ -187,9 +190,6 @@ try {
   report.artifacts['2.0.0'] = summarizeBuild(version200);
   report.artifacts['2.0.1'] = summarizeBuild(version201);
 
-  const peerAppDir = process.platform === 'linux'
-    ? path.join(peerRoot, 'linux', 'Karvis AI')
-    : path.join(peerRoot, 'mac', `${productName}.app`);
   await step('prepare a same-product peer installation with isolated state', async () => {
     await fs.mkdir(path.dirname(peerAppDir), { recursive: true });
     if (process.platform === 'linux') {
@@ -271,16 +271,16 @@ async function runScenario({ format, scenario, version200, version201, peerAppDi
   await step(`${format}: launch installed system entry and peer; verify packaged renderer IPC`, async () => {
     await launchInstallation(format, target, true);
     const targetDiagnosticValue = await waitForDiagnostic(target, '2.0.0');
-    validateDiagnostic(targetDiagnosticValue, target, '2.0.0');
+    await validateDiagnostic(targetDiagnosticValue, target, '2.0.0');
     scenario.initialDiagnostic = targetDiagnosticValue;
     scenario.targetProcess = await processIdentity(target);
     await launchInstallation(format, peer, false);
     const peerDiagnosticValue = await waitForDiagnostic(peer, '2.0.0');
-    validateDiagnostic(peerDiagnosticValue, peer, '2.0.0');
+    await validateDiagnostic(peerDiagnosticValue, peer, '2.0.0');
     scenario.peerDiagnostic = peerDiagnosticValue;
     scenario.peerIdentityBeforeUpgrade = await processIdentity(peer);
     if (!isLinux) scenario.launchServices = await verifyLaunchServices(target, scenario.targetProcess);
-    assert.equal(await queryRuntimeRoot(target), path.resolve(runtimeRoot), 'Installed system entry registered a different runtime root');
+    await assertSamePath(await queryRuntimeRoot(target), runtimeRoot, 'Installed system entry registered a different runtime root');
     assert(await exists(runtimeInstallPath()), 'The shared Electron 28.3.3 runtime was not installed');
   });
   await step(`${format}: upgrade the running target to 2.0.1 while the peer stays alive`, async () => {
@@ -291,7 +291,7 @@ async function runScenario({ format, scenario, version200, version201, peerAppDi
     await assertInstalledApp(target, '2.0.1');
     await launchInstallation(format, target, true);
     const upgradedDiagnostic = await waitForDiagnostic(target, '2.0.1');
-    validateDiagnostic(upgradedDiagnostic, target, '2.0.1');
+    await validateDiagnostic(upgradedDiagnostic, target, '2.0.1');
     scenario.upgradedDiagnostic = upgradedDiagnostic;
     scenario.upgradedProcess = await processIdentity(target);
     assert(await processIdentityAlive(scenario.peerIdentityBeforeUpgrade), 'Peer process identity changed during the target package upgrade');
@@ -530,7 +530,7 @@ async function step(name, action) {
 
 async function installPackage(format, build, scenario) {
   if (process.platform === 'linux') {
-    if (format === 'deb') await runCommand('sudo', ['-n', 'dpkg', '-i', build.packages.deb], { timeout: 5 * 60_000, label: 'dpkg-install-2.0.0' });
+    if (format === 'deb') await runCommand('sudo', ['-n', 'apt-get', 'install', '-y', build.packages.deb], { timeout: 5 * 60_000, label: 'apt-install-2.0.0' });
     else await runCommand('sudo', ['-n', 'rpm', '-U', '--replacepkgs', '--nodeps', build.packages.rpm], { timeout: 5 * 60_000, label: 'rpm-install-2.0.0' });
     scenario.packageName = packageName;
     await verifyLinuxPackageVersion(format, '2.0.0');
@@ -545,7 +545,7 @@ async function installPackage(format, build, scenario) {
 
 async function upgradePackage(format, build, scenario, target) {
   if (process.platform === 'linux') {
-    if (format === 'deb') await runCommand('sudo', ['-n', 'dpkg', '-i', build.packages.deb], { timeout: 5 * 60_000, label: 'dpkg-upgrade-2.0.1' });
+    if (format === 'deb') await runCommand('sudo', ['-n', 'apt-get', 'install', '-y', build.packages.deb], { timeout: 5 * 60_000, label: 'apt-upgrade-2.0.1' });
     else await runCommand('sudo', ['-n', 'rpm', '-U', '--replacepkgs', '--nodeps', build.packages.rpm], { timeout: 5 * 60_000, label: 'rpm-upgrade-2.0.1' });
     await verifyLinuxPackageVersion(format, '2.0.1');
     await verifyLinuxInstalledHooks('2.0.1');
@@ -620,7 +620,7 @@ async function waitForDiagnostic(installation, expectedVersion) {
   return diagnostic;
 }
 
-function validateDiagnostic(value, installation, expectedVersion) {
+async function validateDiagnostic(value, installation, expectedVersion) {
   assert.equal(value.isPackaged, true, 'Karvis renderer was not packaged');
   assert.match(value.appName, /Karvis/i, 'Electron app name is not branded as Karvis');
   assert.equal(value.appVersion, expectedVersion, 'Installed application version is incorrect');
@@ -630,12 +630,17 @@ function validateDiagnostic(value, installation, expectedVersion) {
   assert(value.renderer.rootChildren > 0, 'React did not mount the Karvis renderer');
   assert(value.renderer.htmlLength > 0 && value.renderer.bodyText.trim().length > 0, 'Karvis renderer did not paint visible content');
   assert.match(value.renderer.title, /Karvis/i, 'Renderer window title is not Karvis');
-  assert.equal(path.resolve(value.userData), path.resolve(installation.userData), 'Karvis userData did not use the isolated E2E path');
+  await assertSamePath(value.userData, installation.userData, 'Karvis userData did not use the isolated E2E path');
   const expectedResources = process.platform === 'linux'
     ? path.join(installation.appDir, 'resources')
     : path.join(installation.appDir, 'Contents', 'Resources');
-  assert.equal(path.resolve(value.resourcesPath), path.resolve(expectedResources), 'Electron resourcesPath did not point to the installed Karvis app');
+  await assertSamePath(value.resourcesPath, expectedResources, 'Electron resourcesPath did not point to the installed Karvis app');
   assert.equal(value.appId, targetAppId, 'Minitron launcher did not pass the expected app id into Electron');
+}
+
+async function assertSamePath(actual, expected, message) {
+  const [actualPath, expectedPath] = await Promise.all([fs.realpath(actual), fs.realpath(expected)]);
+  assert.equal(actualPath, expectedPath, message);
 }
 
 async function assertInstalledApp(installation, expectedVersion) {
@@ -807,8 +812,14 @@ async function patchMacLaunchEnvironment(appDir, root, diagnostic, userData) {
 }
 
 async function makeMacAppReadOnly(appDir) {
-  await runCommand('chmod', ['-R', 'a-w', appDir], { timeout: 30_000, label: 'make-mac-app-readonly' })
-    .catch(() => runCommand('sudo', ['-n', 'chmod', '-R', 'a-w', appDir], { timeout: 30_000, label: 'make-root-owned-mac-app-readonly' }));
+  const plist = path.join(appDir, 'Contents', 'Info.plist');
+  const executable = await plistValue(plist, 'CFBundleExecutable');
+  const launcher = path.join(appDir, 'Contents', 'MacOS', executable);
+  const modeBefore = (await fs.stat(launcher)).mode & 0o111;
+  assert(modeBefore !== 0, `macOS launcher lost its executable bits before read-only verification: ${launcher}`);
+  await runCommand('sudo', ['-n', 'chmod', '-R', 'a-w', appDir], { timeout: 30_000, label: 'make-mac-app-readonly' });
+  const modeAfter = (await fs.stat(launcher)).mode & 0o111;
+  assert.equal(modeAfter, modeBefore, `Read-only permissions changed the launcher executable bits: ${launcher}`);
 }
 
 async function plistValue(plist, key) {
@@ -831,7 +842,6 @@ function runtimeInstallPath() {
 async function cleanupOwnedInstalls() {
   if (process.platform === 'linux') {
     const target = { appDir: installedLinuxDir, launcher: path.join(installedLinuxDir, executableName), diagnostic: targetDiagnostic, userData: targetUserData };
-    const peerAppDir = path.join(peerRoot, 'linux', 'Karvis AI');
     const peer = { appDir: peerAppDir, launcher: path.join(peerAppDir, executableName), diagnostic: peerDiagnostic, userData: peerUserData };
     await stopAndUninstall(peer).catch(() => {});
     if (currentScenario?.format === 'deb') await runCommand('sudo', ['-n', 'dpkg', '--purge', packageName], { timeout: 90_000, label: 'cleanup-deb' }).catch(() => {});
@@ -840,7 +850,6 @@ async function cleanupOwnedInstalls() {
   } else {
     for (const mount of mountedVolumes) await runCommand('hdiutil', ['detach', mount], { timeout: 30_000, label: 'cleanup-dmg-mount' }).catch(() => {});
     const target = { appDir: installedMacApp, diagnostic: targetDiagnostic, userData: targetUserData };
-    const peerAppDir = path.join(peerRoot, 'mac', `${productName}.app`);
     const peer = { appDir: peerAppDir, diagnostic: peerDiagnostic, userData: peerUserData };
     if (await exists(path.join(target.appDir, 'Contents', 'Info.plist'))) target.launcher = path.join(target.appDir, 'Contents', 'MacOS', await plistValue(path.join(target.appDir, 'Contents', 'Info.plist'), 'CFBundleExecutable'));
     if (await exists(path.join(peer.appDir, 'Contents', 'Info.plist'))) peer.launcher = path.join(peer.appDir, 'Contents', 'MacOS', await plistValue(path.join(peer.appDir, 'Contents', 'Info.plist'), 'CFBundleExecutable'));
