@@ -637,8 +637,15 @@ fn macos_host_framework_is_unsigned(bundle: &Path) -> Result<bool> {
         metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
         "branded Electron Framework must be a host-local directory"
     );
+    // Some official Electron frameworks carry an embedded Mach-O signature but
+    // omit the resource envelope that `codesign --verify` expects when the
+    // framework is checked in isolation. We only need to know whether signing
+    // the containing host would recurse into a signed framework; verify the
+    // signature presence here, and leave integrity verification to the final
+    // host/helper verification and the runtime archive hash.
     let output = Command::new("/usr/bin/codesign")
-        .arg("--verify")
+        .arg("--display")
+        .arg("--verbose=2")
         .arg(&framework)
         .output()
         .context("inspect shared Electron Framework signature")?;
@@ -653,7 +660,7 @@ fn macos_host_framework_is_unsigned(bundle: &Path) -> Result<bool> {
         return Ok(true);
     }
     bail!(
-        "shared Electron Framework signature verification failed: {}",
+        "inspect shared Electron Framework signature failed: {}",
         stderr.trim()
     )
 }
