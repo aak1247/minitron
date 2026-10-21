@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_SCHEMA: u32 = 1;
+const INSTALLED_BASE_FILE: &str = "installed-base.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ActiveState {
@@ -62,8 +63,161 @@ struct Transaction {
     exit_code: Option<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct InstalledBase {
+    schema: u32,
+    installation: String,
+    app_version: String,
+    required_runtime: String,
+}
+
 fn updates_dir(cfg: &ShellConfig) -> Result<PathBuf> {
-    Ok(cfg.app_dir()?.join("updates"))
+    cfg.updates_dir()
+}
+
+fn read_state_file<T: DeserializeOwned>(cfg: &ShellConfig, name: &str) -> Result<Option<T>> {
+    let current = updates_dir(cfg)?.join(name);
+    if let Some(value) = read_optional(&current)? {
+        return Ok(Some(value));
+    }
+    #[cfg(not(windows))]
+    {
+        let legacy = cfg.legacy_updates_dir()?.join(name);
+        if legacy != current {
+            return read_optional(&legacy);
+        }
+    }
+    Ok(None)
+}
+
+/// Copy only the small state records from the old in-installation Unix layout.
+/// Immutable release payloads remain in place and are accepted by validation.
+pub fn migrate_legacy_state(cfg: &ShellConfig) -> Result<()> {
+    #[cfg(not(windows))]
+    {
+        let current = updates_dir(cfg)?;
+        let legacy = cfg.legacy_updates_dir()?;
+        if legacy == current {
+            return Ok(());
+        }
+        let legacy_metadata = match fs::symlink_metadata(&legacy) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspect {}", legacy.display()))
+            }
+        };
+        if !legacy_metadata.file_type().is_dir() {
+            bail!(
+                "legacy updates path is not a plain directory: {}",
+                legacy.display()
+            );
+        }
+        for name in ["active.json", "pending.json", "transaction.json"] {
+            let destination = current.join(name);
+            if destination.exists() {
+                continue;
+            }
+            let source = legacy.join(name);
+            let metadata = match fs::symlink_metadata(&source) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| format!("inspect {}", source.display()))
+                }
+            };
+            ensure!(
+                metadata.file_type().is_file() && metadata.len() <= 16 * 1024 * 1024,
+                "legacy state is not a bounded regular file: {}",
+                source.display()
+            );
+            let bytes = fs::read(&source)
+                .with_context(|| format!("read legacy state {}", source.display()))?;
+            atomic_write(&destination, &bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reconcile installer-provided base resources with the state retained outside
+/// Unix installations. An installer upgrade intentionally makes its new base
+/// authoritative, while user data and immutable release payloads remain intact.
+pub fn reconcile_installed_base(cfg: &ShellConfig) -> Result<()> {
+    let path = updates_dir(cfg)?.join(INSTALLED_BASE_FILE);
+    let current = InstalledBase {
+        schema: STATE_SCHEMA,
+        installation: canonical_installation(&cfg.installation_dir()?)?,
+        app_version: cfg.app_version.clone(),
+        required_runtime: cfg.required_runtime.clone(),
+    };
+    let previous = read_optional::<InstalledBase>(&path)?;
+    if let Some(previous) = previous {
+        ensure!(
+            previous.schema == STATE_SCHEMA,
+            "unsupported installed base metadata schema"
+        );
+        ensure!(
+            previous.installation == current.installation,
+            "installed base metadata belongs to a different installation"
+        );
+        if previous.app_version != current.app_version
+            || previous.required_runtime != current.required_runtime
+        {
+            let active = ActiveState {
+                schema: STATE_SCHEMA,
+                active: legacy_release(cfg)?,
+                previous: None,
+                txid: None,
+            };
+            write_active(cfg, &active)?;
+            remove_file_if_exists(&updates_dir(cfg)?.join("pending.json"))?;
+            remove_file_if_exists(&updates_dir(cfg)?.join("transaction.json"))?;
+            remove_dir_if_exists(&updates_dir(cfg)?.join("attempts"))?;
+            write_json(&path, &current)?;
+            crate::runtime::register(cfg, &retained_releases(cfg)?)
+                .context("reconcile runtime refs after installer base upgrade")?;
+        }
+        return Ok(());
+    }
+    let inherited_active = read_state_file::<ActiveState>(cfg, "active.json")?;
+    let installer_base_changed = inherited_active.as_ref().is_some_and(|state| {
+        state.active.app_version != cfg.app_version
+            || state.active.runtime_key.version != cfg.required_runtime
+    });
+    if installer_base_changed {
+        let base = legacy_release(cfg)?;
+        let active = ActiveState {
+            schema: STATE_SCHEMA,
+            active: base,
+            previous: None,
+            txid: None,
+        };
+        write_active(cfg, &active)?;
+        remove_file_if_exists(&updates_dir(cfg)?.join("pending.json"))?;
+        remove_file_if_exists(&updates_dir(cfg)?.join("transaction.json"))?;
+        remove_dir_if_exists(&updates_dir(cfg)?.join("attempts"))?;
+        write_json(&path, &current)?;
+        crate::runtime::register(cfg, &retained_releases(cfg)?)
+            .context("reconcile runtime refs for installer base")?;
+        return Ok(());
+    }
+    write_json(&path, &current)?;
+    Ok(())
+}
+
+fn canonical_installation(path: &Path) -> Result<String> {
+    Ok(std::fs::canonicalize(path)
+        .with_context(|| format!("canonicalize installation directory {}", path.display()))?
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("remove {}", path.display())),
+    }
 }
 
 /// Lock shared release metadata while registering runtimes or changing state.
@@ -142,20 +296,31 @@ fn validate_release_for_app(cfg: &ShellConfig, release: &Release) -> Result<()> 
         .canonicalize()
         .with_context(|| format!("resolve resources at {}", release.resources_dir.display()))?;
     let legacy = cfg.resources_dir()?.canonicalize().ok();
-    let releases_root = app_dir.join("updates").join("releases").canonicalize().ok();
+    let releases_root = updates_dir(cfg)?.join("releases").canonicalize().ok();
+    #[cfg(not(windows))]
+    let legacy_releases_root = cfg
+        .legacy_updates_dir()?
+        .join("releases")
+        .canonicalize()
+        .ok();
+    #[cfg(windows)]
+    let legacy_releases_root: Option<PathBuf> = None;
     let is_legacy = legacy.as_ref().is_some_and(|root| root == &resources);
     let is_managed = releases_root
         .as_ref()
         .is_some_and(|root| resources.starts_with(root));
+    let is_legacy_managed = legacy_releases_root
+        .as_ref()
+        .is_some_and(|root| resources.starts_with(root));
     ensure!(
-        is_legacy || is_managed,
+        is_legacy || is_managed || is_legacy_managed,
         "release resources path is outside the app release directories"
     );
     Ok(())
 }
 
 fn read_active(cfg: &ShellConfig) -> Result<ActiveState> {
-    match read_optional::<ActiveState>(&active_path(cfg)?)? {
+    match read_state_file::<ActiveState>(cfg, "active.json")? {
         Some(state) => {
             ensure!(
                 state.schema == STATE_SCHEMA,
@@ -223,7 +388,7 @@ pub fn retained_releases(cfg: &ShellConfig) -> Result<Vec<Release>> {
     let mut releases = vec![active.active];
     releases.extend(active.previous);
 
-    if let Some(pending) = read_optional::<PendingState>(&pending_path(cfg)?)? {
+    if let Some(pending) = read_state_file::<PendingState>(cfg, "pending.json")? {
         ensure!(
             pending.schema == STATE_SCHEMA,
             "unsupported pending.json schema {}",
@@ -233,7 +398,7 @@ pub fn retained_releases(cfg: &ShellConfig) -> Result<Vec<Release>> {
         releases.push(pending.release.clone());
     }
 
-    if let Some(transaction) = read_optional::<Transaction>(&transaction_path(cfg)?)? {
+    if let Some(transaction) = read_state_file::<Transaction>(cfg, "transaction.json")? {
         ensure!(
             transaction.schema == STATE_SCHEMA,
             "unsupported transaction.json schema {}",
@@ -290,9 +455,8 @@ fn safe_app_version(version: &str) -> Result<()> {
     Ok(())
 }
 
-fn release_resources_path(app_dir: &Path, version: &str, sha256: &str) -> PathBuf {
-    app_dir
-        .join("updates")
+fn release_resources_path(updates: &Path, version: &str, sha256: &str) -> PathBuf {
+    updates
         .join("releases")
         .join(version)
         .join(sha256)
@@ -365,10 +529,8 @@ fn stage_payload(
     artifact_sha: &str,
     on_progress: ProgressFn,
 ) -> Result<Release> {
-    let app_dir = cfg.app_dir()?;
-    let updates = app_dir.join("updates");
-    let release_dir = app_dir
-        .join("updates")
+    let updates = updates_dir(cfg)?;
+    let release_dir = updates
         .join("releases")
         .join(app_version)
         .join(artifact_sha);
@@ -455,7 +617,7 @@ pub fn stage(cfg: &ShellConfig, manifest: &Manifest, on_progress: ProgressFn) ->
         let _state = FileLock::shared(&updates.join("state.lock"))?;
         (
             read_active(cfg)?.active,
-            read_optional::<PendingState>(&pending_path(cfg)?)?,
+            read_state_file::<PendingState>(cfg, "pending.json")?,
         )
     };
     safe_app_version(&manifest.app.version)?;
@@ -484,7 +646,7 @@ pub fn stage(cfg: &ShellConfig, manifest: &Manifest, on_progress: ProgressFn) ->
     }
 
     let runtime_artifact = manifest.runtime_artifact_for(&runtime_key)?;
-    crate::runtime::ensure(&runtime_key, runtime_artifact, Box::new(|_, _| {}))
+    crate::runtime::ensure_for(cfg, &runtime_key, runtime_artifact, Box::new(|_, _| {}))
         .context("ensure release Electron runtime")?;
 
     let release = stage_payload(
@@ -744,7 +906,7 @@ pub fn activate_pending(cfg: &ShellConfig) -> Result<Option<Release>> {
     }
     // Runtime installation may have been cleaned up since staging. Never point
     // active.json at a release whose exact runtime cannot be located.
-    crate::runtime::locate(&pending.release.runtime_key)
+    crate::runtime::locate_for(cfg, &pending.release.runtime_key)
         .context("locate pending release runtime")?;
 
     let txid = next_txid();
@@ -879,7 +1041,8 @@ mod tests {
     #[test]
     fn release_paths_are_version_and_hash_scoped() {
         let root = Path::new("app-root");
-        let path = release_resources_path(root, "1.2.3", &"a".repeat(64));
+        let updates = root.join("updates");
+        let path = release_resources_path(&updates, "1.2.3", &"a".repeat(64));
         assert_eq!(
             path,
             root.join("updates")

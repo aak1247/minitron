@@ -47,8 +47,8 @@ fn run() -> Result<i32> {
     }
     if args.first().is_some_and(|x| x == "--help") {
         println!("minitron {SHELL_VERSION}\n{}", i18n::detect().text(
-            "Usage: minitron [--offline] [--headless] [--no-update] [-- app arguments]\n       minitron --check-update | --rollback | --stop | --uninstall | --version\n       minitron --app-dir <absolute-dir> --stop | --uninstall\nSet ELECTRON_RUNTIME_ROOT to override the user runtime cache.\nSet MINITRON_LANG=en or zh to override the system display language.",
-            "用法：minitron [--offline] [--headless] [--no-update] [-- 应用参数]\n      minitron --check-update | --rollback | --stop | --uninstall | --version\n      minitron --app-dir <绝对目录> --stop | --uninstall\n设置 ELECTRON_RUNTIME_ROOT 可指定共享运行时缓存目录。\n设置 MINITRON_LANG=en 或 zh 可覆盖系统显示语言。"
+            "Usage: minitron [--offline] [--headless] [--no-update] [-- app arguments]\n       minitron --check-update | --rollback | --stop | --uninstall | --version\n       minitron --app-dir <absolute-dir> --stop | --uninstall | --runtime-root | --state-dir\nSet ELECTRON_RUNTIME_ROOT to override the user runtime cache.\nSet MINITRON_LANG=en or zh to override the system display language.",
+            "用法：minitron [--offline] [--headless] [--no-update] [-- 应用参数]\n      minitron --check-update | --rollback | --stop | --uninstall | --version\n      minitron --app-dir <绝对目录> --stop | --uninstall | --runtime-root | --state-dir\n设置 ELECTRON_RUNTIME_ROOT 可指定共享运行时缓存目录。\n设置 MINITRON_LANG=en 或 zh 可覆盖系统显示语言。"
         ));
         return Ok(0);
     }
@@ -71,19 +71,28 @@ fn run() -> Result<i32> {
                 println!("STOPPED");
             }
             ManagementCommand::Uninstall => {
-                let app_lock = cfg.app_dir()?.join("updates/application.lock");
-                let _application = fsutil::FileLock::try_exclusive(&app_lock)?
+                let _application = lifecycle::try_lock_for_management(&cfg)?
                     .context("this application installation is already running; close it before updating or uninstalling")?;
                 runtime::unregister_and_maybe_cleanup(&cfg)?;
                 println!("UNINSTALLED");
+            }
+            ManagementCommand::RuntimeRoot => {
+                println!(
+                    "{}",
+                    runtime::runtime_root_for_installation(&cfg)?.display()
+                );
+            }
+            ManagementCommand::StateDir => {
+                println!("{}", cfg.updates_dir()?.display());
             }
         }
         return Ok(0);
     }
     let cfg = config::ShellConfig::load()?;
-    let app_lock = cfg.app_dir()?.join("updates/application.lock");
-    let _application = fsutil::FileLock::try_exclusive(&app_lock)?
+    let _application = lifecycle::try_lock_for_management(&cfg)?
         .context("this application installation is already running; close it before updating or uninstalling")?;
+    updater::migrate_legacy_state(&cfg)?;
+    updater::reconcile_installed_base(&cfg)?;
     if args.first().is_some_and(|x| x == "--rollback") {
         let release = updater::rollback(&cfg)?;
         let _state = updater::state_lock(&cfg)?;
@@ -132,7 +141,7 @@ fn run() -> Result<i32> {
     }
     let active = updater::resolve_active(&cfg)?;
     active.validate()?;
-    let rt = match runtime::locate(&active.runtime_key) {
+    let rt = match runtime::locate_for(&cfg, &active.runtime_key) {
         Ok(rt) => rt,
         Err(error) if offline => return Err(error.context("runtime unavailable in offline mode")),
         Err(_) => {
@@ -142,13 +151,14 @@ fn run() -> Result<i32> {
             }
             let artifact = m.runtime_artifact_for(&active.runtime_key)?;
             if headless {
-                runtime::ensure(
+                runtime::ensure_for(
+                    &cfg,
                     &active.runtime_key,
                     artifact,
                     Box::new(|got, total| eprintln!("RUNTIME_DOWNLOAD:{got}/{total}")),
                 )?
             } else {
-                state::install_runtime(&active.runtime_key, artifact)?
+                state::install_runtime(&cfg, &active.runtime_key, artifact)?
             }
         }
     };
@@ -173,6 +183,8 @@ fn run() -> Result<i32> {
 enum ManagementCommand {
     Stop,
     Uninstall,
+    RuntimeRoot,
+    StateDir,
 }
 
 fn management_command(args: &[OsString]) -> Result<Option<(ManagementCommand, Option<PathBuf>)>> {
@@ -181,6 +193,10 @@ fn management_command(args: &[OsString]) -> Result<Option<(ManagementCommand, Op
             Some(ManagementCommand::Stop)
         } else if arg == "--uninstall" {
             Some(ManagementCommand::Uninstall)
+        } else if arg == "--runtime-root" {
+            Some(ManagementCommand::RuntimeRoot)
+        } else if arg == "--state-dir" {
+            Some(ManagementCommand::StateDir)
         } else {
             None
         }
@@ -207,7 +223,7 @@ fn management_command(args: &[OsString]) -> Result<Option<(ManagementCommand, Op
     let has_app_dir = args.iter().any(|arg| arg == "--app-dir");
     let starts_with_management = args.first().and_then(|arg| action(arg)).is_some();
     if has_app_dir || starts_with_management {
-        anyhow::bail!("--stop and --uninstall accept no application arguments; --app-dir must be paired with one of them");
+        anyhow::bail!("management commands accept no application arguments; --app-dir must be paired with one management command");
     }
     Ok(None)
 }

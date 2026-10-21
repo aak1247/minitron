@@ -38,6 +38,8 @@ struct UpdateTicket {
     sha256: String,
     restart_args: Vec<String>,
     working_dir: PathBuf,
+    #[serde(default)]
+    state_dir: Option<PathBuf>,
     result_path: PathBuf,
 }
 
@@ -151,6 +153,8 @@ pub fn maybe_stage(cfg: &ShellConfig, manifest: &Manifest, args: &[OsString]) ->
     if !needs_stub_update(current, Some(minimum))? {
         return Ok(false);
     }
+    #[cfg(target_os = "macos")]
+    bail!("self-updating a macOS app bundle would invalidate its signature; install the updated package instead");
 
     let shell = manifest
         .shell
@@ -175,7 +179,7 @@ pub fn maybe_stage(cfg: &ShellConfig, manifest: &Manifest, args: &[OsString]) ->
     let expected_sha = normalize_sha256(&artifact.sha256)?;
 
     let app_dir = cfg.app_dir()?;
-    let updates = app_dir.join("updates");
+    let updates = cfg.updates_dir()?;
     let id = unique_id();
     let work_dir = updates
         .join("staging")
@@ -246,6 +250,7 @@ pub fn maybe_stage(cfg: &ShellConfig, manifest: &Manifest, args: &[OsString]) ->
         sha256: expected_sha,
         restart_args: normalized_restart_args(args, &target),
         working_dir: app_dir.canonicalize()?,
+        state_dir: Some(updates.canonicalize()?),
         result_path,
     };
     atomic_write(&ticket_path, &serde_json::to_vec_pretty(&ticket)?)?;
@@ -297,12 +302,20 @@ fn validate_ticket(ticket_path: &Path, ticket: &UpdateTicket) -> Result<()> {
         "self-update ticket path must be absolute"
     );
     let working_dir = ticket.working_dir.canonicalize()?;
-    let updates = ticket.working_dir.join("updates").canonicalize()?;
+    let updates = if let Some(state_dir) = &ticket.state_dir {
+        let cfg = ShellConfig::load_for_app_dir(&working_dir)?;
+        let expected = cfg.updates_dir()?.canonicalize()?;
+        let declared = state_dir.canonicalize()?;
+        ensure!(
+            declared == expected,
+            "self-update state directory does not match installation state"
+        );
+        declared
+    } else {
+        ticket.working_dir.join("updates").canonicalize()?
+    };
     let staging = updates.join("staging").canonicalize()?;
-    ensure!(
-        updates.starts_with(&working_dir),
-        "updates directory is outside the app directory"
-    );
+    ensure!(updates.is_absolute(), "updates directory is not absolute");
     ensure!(
         staging.starts_with(&updates),
         "staging directory is outside updates"
@@ -430,7 +443,9 @@ pub fn apply_ticket(ticket_path: &Path) -> Result<()> {
     // A user may start the old shell in the gap after its parent exits. Take
     // the same application lock as normal startup before replacing the target.
     write_result(&ticket, "waiting_for_application_lock", None)?;
-    let _application = FileLock::exclusive(&ticket.working_dir.join("updates/application.lock"))?;
+    let cfg = ShellConfig::load_for_app_dir(&ticket.working_dir)?;
+    let state_dir = cfg.updates_dir()?;
+    let _application = FileLock::exclusive(&state_dir.join("application.lock"))?;
 
     // Verify again after waiting; the staging path can change while the shell
     // exits, and no unverified file should replace the installed executable.
@@ -479,8 +494,7 @@ pub fn apply_ticket(ticket_path: &Path) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if let Err(spawn_error) = command.spawn() {
-        let _application =
-            FileLock::exclusive(&ticket.working_dir.join("updates/application.lock"))?;
+        let _application = FileLock::exclusive(&state_dir.join("application.lock"))?;
         if let Err(restore_error) = restore_backup(&ticket.backup, &ticket.target) {
             let detail = format!(
                 "updated shell start failed: {spawn_error}; restore failed: {restore_error:#}"

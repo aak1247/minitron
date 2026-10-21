@@ -13,6 +13,10 @@ const RECORD_LOCK_FILE: &str = "process.lock";
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const APP_LOCK_WAIT: Duration = Duration::from_secs(15);
 
+pub struct ApplicationLocks {
+    _locks: Vec<FileLock>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ProcessRecord {
@@ -37,15 +41,19 @@ impl ProcessRecordGuard {
     pub fn begin(cfg: &ShellConfig) -> Result<Self> {
         let (record_path, lock_path) = record_paths(cfg)?;
         let lock = FileLock::exclusive(&lock_path)?;
-        let installation = canonical_installation(&cfg.app_dir()?)?;
+        let installation = canonical_installation(&cfg.installation_dir()?)?;
 
-        if let Some(previous) = read_record(&record_path)? {
+        if let Some((previous, previous_path)) = read_record_for_cfg(cfg, &record_path)? {
             ensure_record_matches(&previous, &installation)?;
             if record_has_live_process(&previous)? {
                 bail!("this installation has a recorded process still running; use --stop first");
             }
-            std::fs::remove_file(&record_path)
-                .context("remove stale installation process record")?;
+            // A legacy record may live in a root-owned or signed installation.
+            // Leave it untouched; the external state directory supersedes it.
+            if previous_path == record_path {
+                std::fs::remove_file(&record_path)
+                    .context("remove stale installation process record")?;
+            }
         }
 
         let owner_pid = std::process::id();
@@ -121,17 +129,15 @@ impl Drop for ProcessRecordGuard {
 
 /// Stop this installation and return while holding its application lock.
 /// Uninstall callers keep that lock through reference removal and GC.
-pub fn stop_and_lock(cfg: &ShellConfig) -> Result<FileLock> {
-    let app_dir = cfg.app_dir()?;
-    let installation = canonical_installation(&app_dir)?;
-    let app_lock_path = app_dir.join("updates/application.lock");
+pub fn stop_and_lock(cfg: &ShellConfig) -> Result<ApplicationLocks> {
+    let installation = canonical_installation(&cfg.installation_dir()?)?;
     let (record_path, lock_path) = record_paths(cfg)?;
 
     // Claim the app lock first when the launcher has already exited. This also
     // prevents a new launch racing an orphan-child shutdown.
-    let mut app_lock = FileLock::try_exclusive(&app_lock_path)?;
+    let mut app_lock = try_application_locks(cfg)?;
     let process_lock = FileLock::exclusive(&lock_path)?;
-    let Some(record) = read_record(&record_path)? else {
+    let Some((record, source_path)) = read_record_for_cfg(cfg, &record_path)? else {
         if app_lock.is_none() {
             bail!("application lock is held but its process record is missing; refusing to uninstall or stop blindly");
         }
@@ -168,31 +174,81 @@ pub fn stop_and_lock(cfg: &ShellConfig) -> Result<FileLock> {
     if record_has_live_process(&record)? {
         bail!("a recorded installation process is still running; refusing to remove runtime references");
     }
-    remove_record(&record_path)?;
+    if source_path == record_path {
+        remove_record(&record_path)?;
+    }
     drop(process_lock);
 
     if app_lock.is_none() {
-        app_lock = Some(wait_for_app_lock(&app_lock_path, APP_LOCK_WAIT)?);
+        app_lock = Some(wait_for_application_locks(cfg, APP_LOCK_WAIT)?);
     }
     Ok(app_lock.expect("application lock acquired before return"))
 }
 
-fn wait_for_app_lock(path: &Path, timeout: Duration) -> Result<FileLock> {
+fn record_paths(cfg: &ShellConfig) -> Result<(PathBuf, PathBuf)> {
+    let updates = cfg.updates_dir()?;
+    Ok((updates.join(RECORD_FILE), updates.join(RECORD_LOCK_FILE)))
+}
+
+fn read_record_for_cfg(
+    cfg: &ShellConfig,
+    current_path: &Path,
+) -> Result<Option<(ProcessRecord, PathBuf)>> {
+    if let Some(record) = read_record(current_path)? {
+        return Ok(Some((record, current_path.to_path_buf())));
+    }
+    #[cfg(not(windows))]
+    {
+        let legacy_path = cfg.legacy_updates_dir()?.join(RECORD_FILE);
+        if legacy_path != current_path {
+            return Ok(read_record(&legacy_path)?.map(|record| (record, legacy_path)));
+        }
+    }
+    Ok(None)
+}
+
+fn application_lock_paths(cfg: &ShellConfig) -> Result<Vec<PathBuf>> {
+    let mut paths = vec![cfg.updates_dir()?.join("application.lock")];
+    #[cfg(not(windows))]
+    {
+        let legacy = cfg.legacy_updates_dir()?.join("application.lock");
+        if legacy != paths[0] && legacy.exists() {
+            paths.push(legacy);
+        }
+    }
+    Ok(paths)
+}
+
+fn try_application_locks(cfg: &ShellConfig) -> Result<Option<ApplicationLocks>> {
+    let paths = application_lock_paths(cfg)?;
+    let mut locks = Vec::with_capacity(paths.len());
+    for (index, path) in paths.into_iter().enumerate() {
+        if index > 0 && !path.exists() {
+            continue;
+        }
+        let Some(lock) = FileLock::try_exclusive(&path)? else {
+            return Ok(None);
+        };
+        locks.push(lock);
+    }
+    Ok(Some(ApplicationLocks { _locks: locks }))
+}
+
+pub fn try_lock_for_management(cfg: &ShellConfig) -> Result<Option<ApplicationLocks>> {
+    try_application_locks(cfg)
+}
+
+fn wait_for_application_locks(cfg: &ShellConfig, timeout: Duration) -> Result<ApplicationLocks> {
     let until = Instant::now() + timeout;
     loop {
-        if let Some(lock) = FileLock::try_exclusive(path)? {
-            return Ok(lock);
+        if let Some(locks) = try_application_locks(cfg)? {
+            return Ok(locks);
         }
         if Instant::now() >= until {
             bail!("application lock did not become available before timeout");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-fn record_paths(cfg: &ShellConfig) -> Result<(PathBuf, PathBuf)> {
-    let updates = cfg.app_dir()?.join("updates");
-    Ok((updates.join(RECORD_FILE), updates.join(RECORD_LOCK_FILE)))
 }
 
 fn read_record(path: &Path) -> Result<Option<ProcessRecord>> {
@@ -261,9 +317,11 @@ fn recorded_process_is_alive(pid: u32, expected_start_time: u64) -> Result<bool>
     if expected_start_time == 0 {
         bail!("process {pid} has no reliable creation time; refusing to signal by PID alone");
     }
-    Ok(process::start_time(pid)
-        .with_context(|| format!("inspect process identity for PID {pid}"))?
-        == expected_start_time)
+    match process::start_time(pid) {
+        Ok(actual) => Ok(actual == expected_start_time),
+        Err(_error) if !process::is_alive(pid) => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("inspect process identity for PID {pid}")),
+    }
 }
 
 fn record_has_live_process(record: &ProcessRecord) -> Result<bool> {
@@ -315,7 +373,14 @@ mod tests {
     }
 
     fn record_path(cfg: &ShellConfig) -> PathBuf {
-        cfg.app_dir().unwrap().join("updates").join(RECORD_FILE)
+        cfg.updates_dir().unwrap().join(RECORD_FILE)
+    }
+
+    fn remove_test_state(cfg: &ShellConfig) {
+        let state = cfg.updates_dir().unwrap();
+        if state.exists() {
+            std::fs::remove_dir_all(state).unwrap();
+        }
     }
 
     #[test]
@@ -328,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn stop_kills_only_the_recorded_installation_processes() {
         let dir = std::env::temp_dir().join(format!(
             "minitron-lifecycle-{}-{}",
@@ -364,6 +429,8 @@ mod tests {
         let _ = unrelated.wait();
         let _ = owner.wait();
         let _ = electron.wait();
+        drop(_lock);
+        remove_test_state(&cfg);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -393,6 +460,7 @@ mod tests {
         assert!(process::is_alive(child.id()));
         child.kill().unwrap();
         let _ = child.wait();
+        remove_test_state(&cfg);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -414,6 +482,7 @@ mod tests {
         guard.finish().unwrap();
         assert!(record_path(&cfg).exists());
         drop(guard);
+        remove_test_state(&cfg);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -432,6 +501,7 @@ mod tests {
         guard.finish().unwrap();
         assert!(!record_path(&cfg).exists());
         drop(guard);
+        remove_test_state(&cfg);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1,6 +1,6 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::Context;
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use std::time::{Duration, Instant};
 
 /// Access-denied and unknown states are treated as alive: cleanup must be conservative.
@@ -64,6 +64,8 @@ mod tests {
         assert!(super::is_alive(std::process::id()));
         assert!(!super::is_alive(0));
         assert!(!super::is_alive(u32::MAX));
+        #[cfg(target_os = "macos")]
+        assert!(super::start_time(std::process::id()).unwrap() > 0);
     }
 }
 
@@ -104,7 +106,12 @@ pub fn start_time(pid: u32) -> Result<u64> {
             .parse::<u64>()?;
         Ok(start)
     }
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let info = macos_process_info(pid)?;
+        Ok(info.pbi_start_tvsec.saturating_mul(1_000_000) + info.pbi_start_tvusec)
+    }
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
         // Keep non-Linux Unix launch/runtime bookkeeping compatible. A zero
         // identity is deliberately rejected by terminate_identity, so these
@@ -216,11 +223,148 @@ pub fn terminate_identity(pid: u32, expected_start_time: u64) -> Result<bool> {
         }
     }
 
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        use std::time::Instant;
+        if !is_alive(pid) {
+            return Ok(false);
+        }
+        match start_time(pid) {
+            Ok(actual) if actual == expected_start_time => {}
+            Ok(_) => return Ok(false),
+            Err(_error) if !is_alive(pid) => return Ok(false),
+            Err(error) => {
+                return Err(error).context("verify macOS process identity before signaling")
+            }
+        }
+
+        macos_signal(pid, libc::SIGTERM)?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        if wait_for_identity_change(pid, expected_start_time, deadline)? {
+            return Ok(true);
+        }
+        // Recheck immediately before SIGKILL. macOS has no pidfd; if the PID
+        // has changed identity, do not send the escalation signal.
+        match start_time(pid) {
+            Ok(actual) if actual == expected_start_time => {}
+            Ok(_) => return Ok(true),
+            Err(_error) if !is_alive(pid) => return Ok(true),
+            Err(error) => {
+                return Err(error).context("recheck macOS process identity before SIGKILL")
+            }
+        }
+        macos_signal(pid, libc::SIGKILL)?;
+        if wait_for_identity_change(
+            pid,
+            expected_start_time,
+            Instant::now() + Duration::from_secs(2),
+        )? {
+            Ok(true)
+        } else {
+            bail!("process {pid} did not exit after SIGKILL")
+        }
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
         let _ = (pid, expected_start_time);
         bail!("safe process termination is unsupported on this platform")
     }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct ProcBsdInfo {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: u32,
+    pbi_gid: u32,
+    pbi_ruid: u32,
+    pbi_rgid: u32,
+    pbi_svuid: u32,
+    pbi_svgid: u32,
+    rfu_1: u32,
+    pbi_comm: [libc::c_char; 16],
+    pbi_name: [libc::c_char; 32],
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_pidinfo(
+        pid: libc::c_int,
+        flavor: libc::c_int,
+        arg: u64,
+        buffer: *mut libc::c_void,
+        buffersize: libc::c_int,
+    ) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_info(pid: u32) -> Result<ProcBsdInfo> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        bail!("invalid macOS process id {pid}");
+    }
+    let mut info: ProcBsdInfo = unsafe { std::mem::zeroed() };
+    let size = unsafe {
+        proc_pidinfo(
+            pid as libc::c_int,
+            3, // PROC_PIDTBSDINFO
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            std::mem::size_of::<ProcBsdInfo>() as libc::c_int,
+        )
+    };
+    if size != std::mem::size_of::<ProcBsdInfo>() as libc::c_int {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    ensure!(
+        info.pbi_pid == pid,
+        "macOS process PID changed while reading identity"
+    );
+    Ok(info)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_signal(pid: u32, signal: i32) -> Result<()> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        bail!("invalid macOS process id {pid}");
+    }
+    if unsafe { libc::kill(pid as libc::pid_t, signal) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(error.into())
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_identity_change(pid: u32, expected: u64, deadline: Instant) -> Result<bool> {
+    while Instant::now() < deadline {
+        match start_time(pid) {
+            Ok(actual) if actual == expected => {}
+            Ok(_) => return Ok(true),
+            Err(_error) if !is_alive(pid) => return Ok(true),
+            Err(error) => {
+                return Err(error).context("inspect macOS process while waiting for exit")
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(false)
 }
 
 #[cfg(target_os = "linux")]

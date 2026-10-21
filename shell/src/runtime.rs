@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 const INSTALL_MARKER: &str = "install.json";
 const INSTALL_MARKER_SCHEMA_VERSION: u32 = 2;
 const REFS_FILE: &str = "refs.json";
+const INSTALLATIONS_FILE: &str = "installations.json";
+const INSTALLATIONS_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct Runtime {
@@ -43,6 +45,154 @@ struct RefCounts {
     map: BTreeMap<String, BTreeSet<String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct InstallationLocator {
+    schema: u32,
+    installations: Vec<InstallationLocatorEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct InstallationLocatorEntry {
+    path: String,
+    #[serde(rename = "runtimeRoot")]
+    runtime_root: String,
+}
+
+/// Resolve this installation's configured root. Explicit overrides win; absent
+/// one, a previously registered per-user locator preserves custom roots.
+pub fn runtime_root_for_config(cfg: &ShellConfig) -> Result<PathBuf> {
+    if std::env::var_os("ELECTRON_RUNTIME_ROOT").is_some_and(|value| !value.is_empty()) {
+        let root = runtime_root();
+        ensure!(root.is_absolute(), "ELECTRON_RUNTIME_ROOT must be absolute");
+        return Ok(root);
+    }
+    #[cfg(unix)]
+    {
+        if let Some(root) = locator_root_for_config(cfg)? {
+            return Ok(root);
+        }
+    }
+    Ok(runtime_root())
+}
+
+/// Read-only discovery entry used by system installer/uninstaller scripts.
+/// It never falls back to another user's or root's cache.
+pub fn runtime_root_for_installation(cfg: &ShellConfig) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let _ = cfg;
+        return Ok(runtime_root());
+    }
+    #[cfg(unix)]
+    {
+        if let Some(root) = locator_root_for_config(cfg)? {
+            return Ok(root);
+        }
+        let install = canonical_install_path(&cfg.installation_dir()?)?;
+        let default_root = runtime_root();
+        ensure!(
+            refs_contain_installation(&default_root, &install)?,
+            "no runtime root is recorded for this installation"
+        );
+        Ok(default_root)
+    }
+}
+
+#[cfg(unix)]
+fn locator_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("cannot resolve current user's home directory")?;
+    #[cfg(target_os = "macos")]
+    let directory = home.join("Library/Application Support/SharedElectron");
+    #[cfg(not(target_os = "macos"))]
+    let directory = home.join(".local/share/SharedElectron");
+    Ok(directory.join(INSTALLATIONS_FILE))
+}
+
+#[cfg(unix)]
+fn read_locator() -> Result<InstallationLocator> {
+    let path = locator_path()?;
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let locator: InstallationLocator = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse installation locator {}", path.display()))?;
+            ensure!(
+                locator.schema == INSTALLATIONS_SCHEMA,
+                "unsupported installation locator schema"
+            );
+            Ok(locator)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(InstallationLocator {
+            schema: INSTALLATIONS_SCHEMA,
+            installations: Vec::new(),
+        }),
+        Err(error) => {
+            Err(error).with_context(|| format!("read installation locator {}", path.display()))
+        }
+    }
+}
+
+#[cfg(unix)]
+fn locator_root_for_config(cfg: &ShellConfig) -> Result<Option<PathBuf>> {
+    let install = canonical_install_path(&cfg.installation_dir()?)?;
+    locator_root_for_path(&read_locator()?, &install)
+}
+
+#[cfg(unix)]
+fn locator_root_for_path(locator: &InstallationLocator, install: &str) -> Result<Option<PathBuf>> {
+    let Some(entry) = locator
+        .installations
+        .iter()
+        .find(|entry| entry.path == install)
+    else {
+        return Ok(None);
+    };
+    let root = PathBuf::from(&entry.runtime_root);
+    ensure!(
+        root.is_absolute(),
+        "installation locator runtimeRoot must be absolute"
+    );
+    Ok(Some(root))
+}
+
+#[cfg(unix)]
+fn upsert_locator(install: &str, root: &Path) -> Result<()> {
+    let path = locator_path()?;
+    let lock_path = path.with_extension("lock");
+    let _lock = FileLock::exclusive(&lock_path)?;
+    let canonical_root = std::fs::canonicalize(root)
+        .with_context(|| format!("canonicalize runtime root {}", root.display()))?;
+    let mut locator = read_locator()?;
+    locator.installations.retain(|entry| entry.path != install);
+    locator.installations.push(InstallationLocatorEntry {
+        path: install.to_owned(),
+        runtime_root: canonical_root.to_string_lossy().into_owned(),
+    });
+    locator.installations.sort_by(|a, b| a.path.cmp(&b.path));
+    atomic_write(&path, &serde_json::to_vec_pretty(&locator)?)
+}
+
+#[cfg(unix)]
+fn remove_locator(install: &str) -> Result<()> {
+    let path = locator_path()?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let lock_path = path.with_extension("lock");
+    let _lock = FileLock::exclusive(&lock_path)?;
+    let mut locator = read_locator()?;
+    locator.installations.retain(|entry| entry.path != install);
+    atomic_write(&path, &serde_json::to_vec_pretty(&locator)?)
+}
+
+#[cfg(unix)]
+fn refs_contain_installation(root: &Path, install: &str) -> Result<bool> {
+    let refs = read_refs(root)?;
+    Ok(refs
+        .map
+        .values()
+        .any(|installations| installations.contains(install)))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct LeaseRecord {
     owner_pid: u32,
@@ -56,10 +206,32 @@ pub fn locate(key: &RuntimeKey) -> Result<Runtime> {
     locate_at(&runtime_root(), key)
 }
 
+pub fn locate_for(cfg: &ShellConfig, key: &RuntimeKey) -> Result<Runtime> {
+    locate_at(&runtime_root_for_config(cfg)?, key)
+}
+
 /// Install from a verified manifest artifact when this exact runtime is absent
 /// or incomplete. Concurrent callers for the same key serialize across processes.
 pub fn ensure(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) -> Result<Runtime> {
-    let result = ensure_inner(key, artifact, on_progress);
+    ensure_at(&runtime_root(), key, artifact, on_progress)
+}
+
+pub fn ensure_for(
+    cfg: &ShellConfig,
+    key: &RuntimeKey,
+    artifact: &Artifact,
+    on_progress: ProgressFn,
+) -> Result<Runtime> {
+    ensure_at(&runtime_root_for_config(cfg)?, key, artifact, on_progress)
+}
+
+fn ensure_at(
+    root: &Path,
+    key: &RuntimeKey,
+    artifact: &Artifact,
+    on_progress: ProgressFn,
+) -> Result<Runtime> {
+    let result = ensure_inner(root, key, artifact, on_progress);
     if let Err(error) = &result {
         // GUI preparation keeps its retry window open, so the main error handler
         // may not run. Retain the underlying failure in redirected diagnostics.
@@ -68,11 +240,16 @@ pub fn ensure(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) ->
     result
 }
 
-fn ensure_inner(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) -> Result<Runtime> {
+fn ensure_inner(
+    root: &Path,
+    key: &RuntimeKey,
+    artifact: &Artifact,
+    on_progress: ProgressFn,
+) -> Result<Runtime> {
     validate_host_key(key)?;
     validate_artifact(artifact)?;
 
-    let root = runtime_root();
+    let root = root.to_path_buf();
     let locks = root.join("locks");
     std::fs::create_dir_all(&locks).context("create runtime lock directory")?;
     let install_lock_path = locks.join(format!("install-{}.lock", key_id(key)));
@@ -163,24 +340,30 @@ fn ensure_inner(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) 
 /// Register every runtime used by the active/previous/pending releases. Repeated
 /// calls for the same installation and release set are idempotent.
 pub fn register(cfg: &ShellConfig, releases: &[Release]) -> Result<()> {
-    let app_dir = cfg.app_dir()?;
-    let install_path = canonical_install_path(&app_dir)?;
-    register_at(&runtime_root(), &install_path, releases)
+    let install_path = canonical_install_path(&cfg.installation_dir()?)?;
+    let root = runtime_root_for_config(cfg)?;
+    std::fs::create_dir_all(&root).context("create runtime root")?;
+    #[cfg(unix)]
+    upsert_locator(&install_path, &root)?;
+    register_at(&root, &install_path, releases)
 }
 
 /// Remove this installation's references. A runtime is reclaimed only after its
 /// final reference is gone and no shell/Electron process holds a usage lease.
 pub fn unregister_and_maybe_cleanup(cfg: &ShellConfig) -> Result<()> {
-    let app_dir = cfg.app_dir()?;
-    let install_path = canonical_install_path(&app_dir)?;
-    unregister_at(&runtime_root(), &install_path)
+    let install_path = canonical_install_path(&cfg.installation_dir()?)?;
+    let root = runtime_root_for_config(cfg)?;
+    unregister_at(&root, &install_path)?;
+    #[cfg(unix)]
+    remove_locator(&install_path)?;
+    Ok(())
 }
 
 /// Hold a shared OS lock for the duration of the shell's wait for Electron.
 /// Persisted PID metadata lets cleanup remain conservative if the shell crashes.
-pub fn acquire_usage(rt: &Runtime) -> Result<RuntimeLease> {
-    let root = runtime_root();
-    let key = key_for_runtime(rt)?;
+pub fn acquire_usage(cfg: &ShellConfig, rt: &Runtime) -> Result<RuntimeLease> {
+    let root = runtime_root_for_config(cfg)?;
+    let key = key_for_runtime(rt, &root)?;
     acquire_usage_at(&root, &key)
 }
 
@@ -188,6 +371,152 @@ pub struct RuntimeLease {
     _lock: FileLock,
     record_path: PathBuf,
     record: LeaseRecord,
+}
+
+/// Build an external branded app-bundle host for macOS. The installed bundle
+/// remains immutable; only the shared Electron frameworks and active resources
+/// are linked into per-installation state.
+#[cfg(target_os = "macos")]
+pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) -> Result<PathBuf> {
+    use std::os::unix::fs::symlink;
+
+    let installed_bundle = cfg.installation_dir()?;
+    let installed_contents = installed_bundle.join("Contents");
+    let info_plist = installed_contents.join("Info.plist");
+    ensure!(
+        info_plist.is_file(),
+        "installed macOS app is missing Contents/Info.plist"
+    );
+    let executable_name =
+        plist_string_value(&std::fs::read_to_string(&info_plist)?, "CFBundleExecutable")
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()?
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .context("cannot determine the app bundle's CFBundleExecutable")?;
+    let icon_file = cfg.resources_dir()?.join("icon.icns");
+    let icon_hash = if icon_file.is_file() {
+        sha256_file(&icon_file)?
+    } else {
+        String::new()
+    };
+    ensure!(
+        !executable_name.is_empty()
+            && !executable_name.contains('/')
+            && !executable_name.contains('\\'),
+        "invalid CFBundleExecutable in app Info.plist"
+    );
+    let bundle_name = installed_bundle
+        .file_name()
+        .context("installed app bundle has no name")?;
+    let identity = format!(
+        "{}:{}:{}:{}:{}:{}",
+        canonical_install_path(&installed_bundle)?,
+        release.app_version,
+        release.runtime_key.version,
+        release.resources_dir.canonicalize()?.display(),
+        sha256_file(&info_plist)?,
+        icon_hash
+    );
+    let hash = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    let host_bundle = cfg
+        .updates_dir()?
+        .join("mac-hosts")
+        .join(hash)
+        .join(bundle_name);
+    let runtime_contents = rt.root.join("Electron.app/Contents");
+    let runtime_executable = runtime_contents.join("MacOS/Electron");
+    let host_executable = host_bundle.join("Contents/MacOS").join(&executable_name);
+    let host_info_plist = host_bundle.join("Contents/Info.plist");
+    let host_resources = host_bundle.join("Contents/Resources");
+    let active_asar = release.resources_dir.join("app.asar");
+    let reusable = std::fs::symlink_metadata(&host_executable)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        && std::fs::read_link(&host_executable).ok().as_deref()
+            == Some(runtime_executable.as_path())
+        && host_info_plist.is_file()
+        && std::fs::read(&host_info_plist).ok() == std::fs::read(&info_plist).ok()
+        && host_resources.join("app.asar").canonicalize().ok() == active_asar.canonicalize().ok()
+        && std::fs::read_link(host_bundle.join("Contents/Frameworks"))
+            .ok()
+            .as_deref()
+            == Some(runtime_contents.join("Frameworks").as_path());
+    if reusable {
+        return Ok(host_executable);
+    }
+    if host_bundle.exists() {
+        std::fs::remove_dir_all(&host_bundle).context("replace stale macOS runtime host")?;
+    }
+    let host_contents = host_bundle.join("Contents");
+    let host_macos = host_contents.join("MacOS");
+    let host_resources = host_contents.join("Resources");
+    std::fs::create_dir_all(&host_macos)?;
+    std::fs::create_dir_all(&host_resources)?;
+
+    std::fs::copy(&info_plist, host_contents.join("Info.plist"))?;
+    for directory in ["Frameworks", "PlugIns", "XPCServices", "SharedFrameworks"] {
+        let source = runtime_contents.join(directory);
+        if source.exists() {
+            symlink(source, host_contents.join(directory))?;
+        }
+    }
+    ensure!(
+        runtime_executable.is_file(),
+        "shared Electron executable is missing"
+    );
+    symlink(runtime_executable, host_macos.join(&executable_name))?;
+
+    let runtime_resources = runtime_contents.join("Resources");
+    link_directory_entries(&runtime_resources, &host_resources, &[])?;
+    link_directory_entries(
+        &cfg.resources_dir()?,
+        &host_resources,
+        &["app.asar", "app.asar.unpacked"],
+    )?;
+    link_directory_entries(&release.resources_dir, &host_resources, &[])?;
+    let pkg_info = installed_contents.join("PkgInfo");
+    if pkg_info.is_file() {
+        std::fs::copy(pkg_info, host_contents.join("PkgInfo"))?;
+    }
+    Ok(host_macos.join(executable_name))
+}
+
+#[cfg(target_os = "macos")]
+fn plist_string_value(plist: &str, key: &str) -> Option<String> {
+    let marker = format!("<key>{key}</key>");
+    let rest = plist.split_once(&marker)?.1;
+    let value = rest.split_once("<string>")?.1.split_once("</string>")?.0;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn link_directory_entries(source: &Path, destination: &Path, excluded: &[&str]) -> Result<()> {
+    use std::os::unix::fs::symlink;
+    ensure!(
+        source.is_dir(),
+        "missing app resources directory: {}",
+        source.display()
+    );
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if excluded.iter().any(|excluded| name == *excluded) {
+            continue;
+        }
+        let target = destination.join(name);
+        if let Ok(meta) = std::fs::symlink_metadata(&target) {
+            if meta.file_type().is_dir() && !meta.file_type().is_symlink() {
+                std::fs::remove_dir_all(&target)?;
+            } else {
+                std::fs::remove_file(&target)?;
+            }
+        }
+        symlink(entry.path(), target)?;
+    }
+    Ok(())
 }
 
 impl RuntimeLease {
@@ -634,7 +963,7 @@ fn process_identity_alive(pid: u32, expected_start_time: u64) -> Result<bool> {
     Ok(expected_start_time == 0 || actual_start_time == expected_start_time)
 }
 
-fn key_for_runtime(rt: &Runtime) -> Result<RuntimeKey> {
+fn key_for_runtime(rt: &Runtime, root: &Path) -> Result<RuntimeKey> {
     let platform = platform_triple().to_owned();
     let key = RuntimeKey {
         platform,
@@ -642,7 +971,7 @@ fn key_for_runtime(rt: &Runtime) -> Result<RuntimeKey> {
     };
     key.validate()?;
     ensure!(
-        version_dir(&runtime_root(), &key) == rt.root,
+        version_dir(root, &key) == rt.root,
         "runtime root does not match the configured runtime cache"
     );
     Ok(key)
@@ -704,6 +1033,30 @@ mod tests {
 
     fn test_key() -> RuntimeKey {
         RuntimeKey::current("32.2.0")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installation_locator_requires_an_exact_path_and_absolute_root() {
+        let root = std::env::temp_dir().join("runtime-root");
+        let locator = InstallationLocator {
+            schema: INSTALLATIONS_SCHEMA,
+            installations: vec![InstallationLocatorEntry {
+                path: "/opt/apps/karvis".to_owned(),
+                runtime_root: root.to_string_lossy().into_owned(),
+            }],
+        };
+        assert_eq!(
+            locator_root_for_path(&locator, "/opt/apps/karvis").unwrap(),
+            Some(root)
+        );
+        assert!(locator_root_for_path(&locator, "/opt/apps/karvis-copy")
+            .unwrap()
+            .is_none());
+
+        let mut invalid = locator;
+        invalid.installations[0].runtime_root = "relative/cache".to_owned();
+        assert!(locator_root_for_path(&invalid, "/opt/apps/karvis").is_err());
     }
 
     fn write_valid_runtime(root: &Path, key: &RuntimeKey) {

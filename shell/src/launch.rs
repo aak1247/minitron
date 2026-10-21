@@ -31,10 +31,14 @@ pub fn launch(
     update_args: Option<Vec<OsString>>,
 ) -> Result<i32> {
     release.validate()?;
-    let mut lease = crate::runtime::acquire_usage(rt)?;
+    let mut lease = crate::runtime::acquire_usage(cfg, rt)?;
     let ready_path = crate::updater::mark_started(cfg, std::process::id())?;
     let txid = crate::updater::attempt_id(cfg)?;
-    let mut command = Command::new(&rt.electron_bin);
+    #[cfg(target_os = "macos")]
+    let electron_executable = crate::runtime::prepare_macos_host(cfg, rt, release)?;
+    #[cfg(not(target_os = "macos"))]
+    let electron_executable = rt.electron_bin.clone();
+    let mut command = Command::new(&electron_executable);
     command
         .arg(electron_app_argument(
             &release.resources_dir.join("app.asar"),

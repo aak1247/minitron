@@ -13,6 +13,7 @@ type Progress = Arc<Mutex<Option<(u64, u64)>>>;
 
 fn begin(
     window: slint::Weak<ShellWindow>,
+    cfg: crate::config::ShellConfig,
     key: RuntimeKey,
     artifact: Artifact,
     busy: Arc<AtomicBool>,
@@ -44,7 +45,7 @@ fn begin(
                 *slot = Some((got, total));
             }
         });
-        let result = runtime::ensure(&key, &artifact, callback);
+        let result = runtime::ensure_for(&cfg, &key, &artifact, callback);
         if let Ok(mut slot) = outcome.lock() {
             *slot = Some(result);
         }
@@ -52,7 +53,11 @@ fn begin(
     });
 }
 
-pub fn install_runtime(key: &RuntimeKey, artifact: &Artifact) -> Result<runtime::Runtime> {
+pub fn install_runtime(
+    cfg: &crate::config::ShellConfig,
+    key: &RuntimeKey,
+    artifact: &Artifact,
+) -> Result<runtime::Runtime> {
     let window = ShellWindow::new()?;
     crate::i18n::apply(&window);
     window.set_runtime_label(format!("Electron {} · {}", key.version, key.platform).into());
@@ -66,9 +71,11 @@ pub fn install_runtime(key: &RuntimeKey, artifact: &Artifact) -> Result<runtime:
     let retry_busy = busy.clone();
     let retry_outcome = outcome.clone();
     let retry_progress = progress.clone();
+    let retry_cfg = cfg.clone();
     window.on_retry(move || {
         begin(
             retry_weak.clone(),
+            retry_cfg.clone(),
             retry_key.clone(),
             retry_artifact.clone(),
             retry_busy.clone(),
@@ -150,9 +157,11 @@ pub fn install_runtime(key: &RuntimeKey, artifact: &Artifact) -> Result<runtime:
     let initial_key = key.clone();
     let initial_artifact = artifact.clone();
     let initial_outcome = outcome.clone();
+    let initial_cfg = cfg.clone();
     slint::Timer::single_shot(Duration::ZERO, move || {
         begin(
             weak,
+            initial_cfg,
             initial_key,
             initial_artifact,
             busy,
