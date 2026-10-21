@@ -1108,6 +1108,9 @@ async function verifyLaunchServices(installation, identity) {
 }
 
 async function installDmg(dmgPath, appDir) {
+  const workRoot = path.resolve(work);
+  const installRoot = path.resolve(appDir);
+  assert(installRoot.startsWith(`${workRoot}${path.sep}`), `Refusing to copy a DMG outside the owned test work directory: ${appDir}`);
   const mountPoint = path.join(work, 'mounted', path.basename(dmgPath, '.dmg'));
   await fs.mkdir(mountPoint, { recursive: true });
   await runCommand('hdiutil', ['attach', '-plist', '-nobrowse', '-readonly', '-mountpoint', mountPoint, dmgPath], { timeout: 2 * 60_000, label: 'mount-dmg' });
@@ -1115,7 +1118,7 @@ async function installDmg(dmgPath, appDir) {
   try {
     const sourceApp = await findMacAppDir(mountPoint, productName);
     await fs.mkdir(path.dirname(appDir), { recursive: true });
-    await runCommand('ditto', [sourceApp, appDir], { timeout: 3 * 60_000, label: 'copy-dmg-app' });
+    await runCommand('sudo', ['-n', 'ditto', sourceApp, appDir], { timeout: 3 * 60_000, label: 'copy-dmg-app' });
   } finally {
     await runCommand('hdiutil', ['detach', mountPoint], { timeout: 60_000, label: 'detach-dmg' });
     mountedVolumes.delete(mountPoint);
