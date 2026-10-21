@@ -191,7 +191,7 @@ fn record_paths(cfg: &ShellConfig) -> Result<(PathBuf, PathBuf)> {
 }
 
 fn read_record_for_cfg(
-    cfg: &ShellConfig,
+    _cfg: &ShellConfig,
     current_path: &Path,
 ) -> Result<Option<(ProcessRecord, PathBuf)>> {
     if let Some(record) = read_record(current_path)? {
@@ -199,7 +199,7 @@ fn read_record_for_cfg(
     }
     #[cfg(not(windows))]
     {
-        let legacy_path = cfg.legacy_updates_dir()?.join(RECORD_FILE);
+        let legacy_path = _cfg.legacy_updates_dir()?.join(RECORD_FILE);
         if legacy_path != current_path {
             return Ok(read_record(&legacy_path)?.map(|record| (record, legacy_path)));
         }
@@ -208,15 +208,32 @@ fn read_record_for_cfg(
 }
 
 fn application_lock_paths(cfg: &ShellConfig) -> Result<Vec<PathBuf>> {
-    let mut paths = vec![cfg.updates_dir()?.join("application.lock")];
+    #[cfg(windows)]
+    {
+        return Ok(vec![cfg.updates_dir()?.join("application.lock")]);
+    }
     #[cfg(not(windows))]
     {
+        let root = crate::runtime::runtime_root_for_config(cfg)?;
+        let install_id = crate::config::installation_state_id(&cfg.installation_dir()?)?;
+        let mut paths = vec![root
+            .join("locks/installations")
+            .join(format!("{install_id}.application.lock"))];
+
+        // Serialize with launches made by the previous external-state layout.
+        let current = cfg.updates_dir()?.join("application.lock");
+        if current.exists() {
+            paths.push(current);
+        }
+
+        // Also honor pre-migration portable installs that kept their lock and
+        // process record beside the installed launcher.
         let legacy = cfg.legacy_updates_dir()?.join("application.lock");
-        if legacy != paths[0] && legacy.exists() {
+        if !paths.contains(&legacy) && legacy.exists() {
             paths.push(legacy);
         }
+        Ok(paths)
     }
-    Ok(paths)
 }
 
 fn try_application_locks(cfg: &ShellConfig) -> Result<Option<ApplicationLocks>> {

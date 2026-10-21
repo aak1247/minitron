@@ -154,7 +154,9 @@ pub fn maybe_stage(cfg: &ShellConfig, manifest: &Manifest, args: &[OsString]) ->
         return Ok(false);
     }
     #[cfg(target_os = "macos")]
-    bail!("self-updating a macOS app bundle would invalidate its signature; install the updated package instead");
+    if cfg.is_macos_app_bundle()? {
+        bail!("self-updating a macOS app bundle would invalidate its signature; install the updated package instead");
+    }
 
     let shell = manifest
         .shell
@@ -443,8 +445,14 @@ pub fn apply_ticket(ticket_path: &Path) -> Result<()> {
     // A user may start the old shell in the gap after its parent exits. Take
     // the same application lock as normal startup before replacing the target.
     write_result(&ticket, "waiting_for_application_lock", None)?;
-    let cfg = ShellConfig::load_for_app_dir(&ticket.working_dir)?;
-    let state_dir = cfg.updates_dir()?;
+    // Legacy tickets (written before Unix state moved outside read-only
+    // installations) must keep using their declared in-installation state.
+    // New tickets were checked against the installation state by validate_ticket.
+    let state_dir = if let Some(state_dir) = &ticket.state_dir {
+        state_dir.canonicalize()?
+    } else {
+        ticket.working_dir.join("updates").canonicalize()?
+    };
     let _application = FileLock::exclusive(&state_dir.join("application.lock"))?;
 
     // Verify again after waiting; the staging path can change while the shell

@@ -1,6 +1,8 @@
+#[cfg(target_os = "macos")]
+use anyhow::ensure;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::Context;
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, Result};
 use std::time::{Duration, Instant};
 
 /// Access-denied and unknown states are treated as alive: cleanup must be conservative.
@@ -43,7 +45,20 @@ pub fn is_alive(pid: u32) -> bool {
                 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         }
     }
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        if pid > i32::MAX as u32 {
+            return false;
+        }
+        if let Ok(info) = macos_process_info(pid) {
+            return info.pbi_status != 5; // SZOMB: exited, awaiting collection by its parent.
+        }
+        unsafe {
+            libc::kill(pid as i32, 0) == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
         // kill() interprets negative values as process groups, not process IDs.
         // A stale or malformed u32 lease must never become kill(-1, 0).
@@ -354,6 +369,9 @@ fn macos_signal(pid: u32, signal: i32) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn wait_for_identity_change(pid: u32, expected: u64, deadline: Instant) -> Result<bool> {
     while Instant::now() < deadline {
+        if !is_alive(pid) {
+            return Ok(true);
+        }
         match start_time(pid) {
             Ok(actual) if actual == expected => {}
             Ok(_) => return Ok(true),

@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_SCHEMA: u32 = 1;
+#[cfg(not(windows))]
 const INSTALLED_BASE_FILE: &str = "installed-base.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +64,7 @@ struct Transaction {
     exit_code: Option<i32>,
 }
 
+#[cfg(not(windows))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct InstalledBase {
     schema: u32,
@@ -93,6 +95,8 @@ fn read_state_file<T: DeserializeOwned>(cfg: &ShellConfig, name: &str) -> Result
 /// Copy only the small state records from the old in-installation Unix layout.
 /// Immutable release payloads remain in place and are accepted by validation.
 pub fn migrate_legacy_state(cfg: &ShellConfig) -> Result<()> {
+    #[cfg(windows)]
+    let _ = cfg;
     #[cfg(not(windows))]
     {
         let current = updates_dir(cfg)?;
@@ -142,6 +146,7 @@ pub fn migrate_legacy_state(cfg: &ShellConfig) -> Result<()> {
 /// Reconcile installer-provided base resources with the state retained outside
 /// Unix installations. An installer upgrade intentionally makes its new base
 /// authoritative, while user data and immutable release payloads remain intact.
+#[cfg(not(windows))]
 pub fn reconcile_installed_base(cfg: &ShellConfig) -> Result<()> {
     let path = updates_dir(cfg)?.join(INSTALLED_BASE_FILE);
     let current = InstalledBase {
@@ -205,6 +210,7 @@ pub fn reconcile_installed_base(cfg: &ShellConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn canonical_installation(path: &Path) -> Result<String> {
     Ok(std::fs::canonicalize(path)
         .with_context(|| format!("canonicalize installation directory {}", path.display()))?
@@ -212,6 +218,7 @@ fn canonical_installation(path: &Path) -> Result<String> {
         .into_owned())
 }
 
+#[cfg(not(windows))]
 fn remove_file_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -290,7 +297,6 @@ fn legacy_release(cfg: &ShellConfig) -> Result<Release> {
 
 fn validate_release_for_app(cfg: &ShellConfig, release: &Release) -> Result<()> {
     release.validate()?;
-    let app_dir = cfg.app_dir()?.canonicalize()?;
     let resources = release
         .resources_dir
         .canonicalize()

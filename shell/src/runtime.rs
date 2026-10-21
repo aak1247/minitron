@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 const INSTALL_MARKER: &str = "install.json";
 const INSTALL_MARKER_SCHEMA_VERSION: u32 = 2;
 const REFS_FILE: &str = "refs.json";
+#[cfg(unix)]
 const INSTALLATIONS_FILE: &str = "installations.json";
+#[cfg(unix)]
 const INSTALLATIONS_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone)]
@@ -45,12 +47,14 @@ struct RefCounts {
     map: BTreeMap<String, BTreeSet<String>>,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct InstallationLocator {
     schema: u32,
     installations: Vec<InstallationLocatorEntry>,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct InstallationLocatorEntry {
     path: String,
@@ -61,6 +65,8 @@ struct InstallationLocatorEntry {
 /// Resolve this installation's configured root. Explicit overrides win; absent
 /// one, a previously registered per-user locator preserves custom roots.
 pub fn runtime_root_for_config(cfg: &ShellConfig) -> Result<PathBuf> {
+    #[cfg(windows)]
+    let _ = cfg;
     if std::env::var_os("ELECTRON_RUNTIME_ROOT").is_some_and(|value| !value.is_empty()) {
         let root = runtime_root();
         ensure!(root.is_absolute(), "ELECTRON_RUNTIME_ROOT must be absolute");
@@ -201,19 +207,8 @@ struct LeaseRecord {
     child_start_time: Option<u64>,
 }
 
-/// Locate a committed runtime for this exact platform and version.
-pub fn locate(key: &RuntimeKey) -> Result<Runtime> {
-    locate_at(&runtime_root(), key)
-}
-
 pub fn locate_for(cfg: &ShellConfig, key: &RuntimeKey) -> Result<Runtime> {
     locate_at(&runtime_root_for_config(cfg)?, key)
-}
-
-/// Install from a verified manifest artifact when this exact runtime is absent
-/// or incomplete. Concurrent callers for the same key serialize across processes.
-pub fn ensure(key: &RuntimeKey, artifact: &Artifact, on_progress: ProgressFn) -> Result<Runtime> {
-    ensure_at(&runtime_root(), key, artifact, on_progress)
 }
 
 pub fn ensure_for(
@@ -353,10 +348,58 @@ pub fn register(cfg: &ShellConfig, releases: &[Release]) -> Result<()> {
 pub fn unregister_and_maybe_cleanup(cfg: &ShellConfig) -> Result<()> {
     let install_path = canonical_install_path(&cfg.installation_dir()?)?;
     let root = runtime_root_for_config(cfg)?;
+    #[cfg(not(windows))]
+    let state_id = crate::config::installation_state_id(&cfg.installation_dir()?)?;
+    #[cfg(not(windows))]
+    ensure!(
+        cfg.updates_dir()? == root.join("installations").join(&state_id).join("updates"),
+        "installation state path does not match its runtime root and identity"
+    );
     unregister_at(&root, &install_path)?;
+    #[cfg(not(windows))]
+    {
+        let canonical_root = std::fs::canonicalize(&root)
+            .with_context(|| format!("canonicalize runtime root {}", root.display()))?;
+        remove_installation_state(&canonical_root, &state_id)?;
+    }
     #[cfg(unix)]
     remove_locator(&install_path)?;
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn remove_installation_state(root: &Path, state_id: &str) -> Result<()> {
+    ensure!(
+        state_id.len() == 64 && state_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "invalid installation state identity"
+    );
+    let installations = root.join("installations");
+    let installations_metadata = match std::fs::symlink_metadata(&installations) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspect {}", installations.display()))
+        }
+    };
+    ensure!(
+        installations_metadata.file_type().is_dir()
+            && !installations_metadata.file_type().is_symlink(),
+        "installation state root is not a plain directory: {}",
+        installations.display()
+    );
+    let state = installations.join(state_id);
+    let state_metadata = match std::fs::symlink_metadata(&state) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("inspect {}", state.display())),
+    };
+    ensure!(
+        state_metadata.file_type().is_dir() && !state_metadata.file_type().is_symlink(),
+        "installation state is not a plain directory: {}",
+        state.display()
+    );
+    std::fs::remove_dir_all(&state)
+        .with_context(|| format!("remove installation state {}", state.display()))
 }
 
 /// Hold a shared OS lock for the duration of the shell's wait for Electron.
@@ -408,17 +451,25 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
             && !executable_name.contains('\\'),
         "invalid CFBundleExecutable in app Info.plist"
     );
+    let runtime_contents = rt.root.join("Electron.app/Contents");
+    let runtime_executable = runtime_contents.join("MacOS/Electron");
+    ensure!(
+        runtime_executable.is_file(),
+        "shared Electron executable is missing"
+    );
+    let runtime_executable_hash = sha256_file(&runtime_executable)?;
     let bundle_name = installed_bundle
         .file_name()
         .context("installed app bundle has no name")?;
     let identity = format!(
-        "{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}",
         canonical_install_path(&installed_bundle)?,
         release.app_version,
         release.runtime_key.version,
         release.resources_dir.canonicalize()?.display(),
         sha256_file(&info_plist)?,
-        icon_hash
+        icon_hash,
+        runtime_executable_hash
     );
     let hash = format!("{:x}", Sha256::digest(identity.as_bytes()));
     let host_bundle = cfg
@@ -426,16 +477,12 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
         .join("mac-hosts")
         .join(hash)
         .join(bundle_name);
-    let runtime_contents = rt.root.join("Electron.app/Contents");
-    let runtime_executable = runtime_contents.join("MacOS/Electron");
     let host_executable = host_bundle.join("Contents/MacOS").join(&executable_name);
     let host_info_plist = host_bundle.join("Contents/Info.plist");
     let host_resources = host_bundle.join("Contents/Resources");
     let active_asar = release.resources_dir.join("app.asar");
     let reusable = std::fs::symlink_metadata(&host_executable)
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        && std::fs::read_link(&host_executable).ok().as_deref()
-            == Some(runtime_executable.as_path())
+        .is_ok_and(|metadata| metadata.file_type().is_file())
         && host_info_plist.is_file()
         && std::fs::read(&host_info_plist).ok() == std::fs::read(&info_plist).ok()
         && host_resources.join("app.asar").canonicalize().ok() == active_asar.canonicalize().ok()
@@ -443,7 +490,7 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
             .ok()
             .as_deref()
             == Some(runtime_contents.join("Frameworks").as_path());
-    if reusable {
+    if reusable && verify_macos_host_signature(&host_bundle).is_ok() {
         return Ok(host_executable);
     }
     if host_bundle.exists() {
@@ -462,11 +509,13 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
             symlink(source, host_contents.join(directory))?;
         }
     }
+    let copied_executable = host_macos.join(&executable_name);
+    std::fs::copy(&runtime_executable, &copied_executable)
+        .context("copy Electron executable into branded runtime host")?;
     ensure!(
-        runtime_executable.is_file(),
-        "shared Electron executable is missing"
+        sha256_file(&copied_executable)?.eq_ignore_ascii_case(&runtime_executable_hash),
+        "copied Electron executable hash does not match shared runtime"
     );
-    symlink(runtime_executable, host_macos.join(&executable_name))?;
 
     let runtime_resources = runtime_contents.join("Resources");
     link_directory_entries(&runtime_resources, &host_resources, &[])?;
@@ -480,7 +529,42 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
     if pkg_info.is_file() {
         std::fs::copy(pkg_info, host_contents.join("PkgInfo"))?;
     }
+    sign_macos_host(&host_bundle)?;
     Ok(host_macos.join(executable_name))
+}
+
+#[cfg(target_os = "macos")]
+fn sign_macos_host(bundle: &Path) -> Result<()> {
+    use std::process::Command;
+
+    let output = Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-", "--timestamp=none"])
+        .arg(bundle)
+        .output()
+        .context("start ad-hoc code signing for branded runtime host")?;
+    ensure!(
+        output.status.success(),
+        "ad-hoc signing branded runtime host failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    verify_macos_host_signature(bundle)
+}
+
+#[cfg(target_os = "macos")]
+fn verify_macos_host_signature(bundle: &Path) -> Result<()> {
+    use std::process::Command;
+
+    let output = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict"])
+        .arg(bundle)
+        .output()
+        .context("start branded runtime host signature verification")?;
+    ensure!(
+        output.status.success(),
+        "branded runtime host signature verification failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1057,6 +1141,29 @@ mod tests {
         let mut invalid = locator;
         invalid.installations[0].runtime_root = "relative/cache".to_owned();
         assert!(locator_root_for_path(&invalid, "/opt/apps/karvis").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn removing_installation_state_keeps_sibling_installations() {
+        let root = temp_root("uninstall-state");
+        let state_a = "a".repeat(64);
+        let state_b = "b".repeat(64);
+        let install_a = root.join("installations").join(&state_a);
+        let install_b = root.join("installations").join(&state_b);
+        std::fs::create_dir_all(install_a.join("updates/releases")).unwrap();
+        std::fs::create_dir_all(install_b.join("updates")).unwrap();
+        std::fs::write(install_a.join("updates/releases/payload"), b"a").unwrap();
+        std::fs::write(install_b.join("updates/active.json"), b"b").unwrap();
+
+        remove_installation_state(&root, &state_a).unwrap();
+
+        assert!(!install_a.exists());
+        assert_eq!(
+            std::fs::read(install_b.join("updates/active.json")).unwrap(),
+            b"b"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn write_valid_runtime(root: &Path, key: &RuntimeKey) {

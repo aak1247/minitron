@@ -35,7 +35,11 @@ pub fn launch(
     let ready_path = crate::updater::mark_started(cfg, std::process::id())?;
     let txid = crate::updater::attempt_id(cfg)?;
     #[cfg(target_os = "macos")]
-    let electron_executable = crate::runtime::prepare_macos_host(cfg, rt, release)?;
+    let electron_executable = if cfg.is_macos_app_bundle()? {
+        crate::runtime::prepare_macos_host(cfg, rt, release)?
+    } else {
+        rt.electron_bin.clone()
+    };
     #[cfg(not(target_os = "macos"))]
     let electron_executable = rt.electron_bin.clone();
     let mut command = Command::new(&electron_executable);

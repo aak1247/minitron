@@ -92,6 +92,7 @@ fn run() -> Result<i32> {
     let _application = lifecycle::try_lock_for_management(&cfg)?
         .context("this application installation is already running; close it before updating or uninstalling")?;
     updater::migrate_legacy_state(&cfg)?;
+    #[cfg(not(windows))]
     updater::reconcile_installed_base(&cfg)?;
     if args.first().is_some_and(|x| x == "--rollback") {
         let release = updater::rollback(&cfg)?;

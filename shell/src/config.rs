@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+#[cfg(not(windows))]
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -51,6 +52,7 @@ impl ShellConfig {
             if directory
                 .extension()
                 .is_some_and(|extension| extension == "app")
+                && directory.join("Contents/MacOS").is_dir()
             {
                 return directory.join("Contents/MacOS");
             }
@@ -112,10 +114,10 @@ impl ShellConfig {
         let app_dir = self.app_dir()?;
         #[cfg(target_os = "macos")]
         {
-            return Ok(app_dir
-                .parent()
-                .context("macOS launcher directory has no Contents parent")?
-                .join("Resources"));
+            if let Some(bundle) = macos_bundle_root(&app_dir) {
+                return Ok(bundle.join("Contents/Resources"));
+            }
+            return Ok(app_dir.join("resources"));
         }
         #[cfg(not(target_os = "macos"))]
         Ok(app_dir.join("resources"))
@@ -128,16 +130,15 @@ impl ShellConfig {
         let app_dir = self.app_dir()?;
         #[cfg(target_os = "macos")]
         {
-            let contents = app_dir
-                .parent()
-                .context("macOS launcher directory has no Contents parent")?;
-            return Ok(contents
-                .parent()
-                .context("macOS Contents directory has no bundle parent")?
-                .to_path_buf());
+            return Ok(macos_bundle_root(&app_dir).unwrap_or(app_dir));
         }
         #[cfg(not(target_os = "macos"))]
         Ok(app_dir)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn is_macos_app_bundle(&self) -> Result<bool> {
+        Ok(macos_bundle_root(&self.app_dir()?).is_some())
     }
 
     /// Persistent mutable state is external to Unix installations so signed
@@ -158,11 +159,26 @@ impl ShellConfig {
 
     /// Previous Unix releases kept mutable state under the installation. It is
     /// retained as a read-only migration source for existing installations.
+    #[cfg(not(windows))]
     pub fn legacy_updates_dir(&self) -> Result<PathBuf> {
         Ok(self.app_dir()?.join("updates"))
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_bundle_root(app_dir: &Path) -> Option<PathBuf> {
+    let contents = app_dir.parent()?;
+    if !contents.file_name().is_some_and(|name| name == "Contents") {
+        return None;
+    }
+    let bundle = contents.parent()?;
+    bundle
+        .extension()
+        .is_some_and(|extension| extension == "app")
+        .then(|| bundle.to_path_buf())
+}
+
+#[cfg(not(windows))]
 pub fn installation_state_id(path: &Path) -> Result<String> {
     let canonical = std::fs::canonicalize(path)
         .with_context(|| format!("canonicalize installation directory {}", path.display()))?;
@@ -347,6 +363,24 @@ mod tests {
             from_bundle.updates_dir().unwrap(),
             from_macos.updates_dir().unwrap()
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn portable_macos_directory_keeps_resources_and_identity_next_to_launcher() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("app-A/minitron");
+        std::fs::create_dir_all(install.join("resources")).unwrap();
+        let config_path = install.join("minitron.toml");
+        std::fs::write(
+            &config_path,
+            "app_id='example.app'\nrequired_runtime='32.2.0'\nmanifest_url='https://example.invalid/manifest.json'\napp_version='1.0.0'\n",
+        )
+        .unwrap();
+        let config = ShellConfig::load_from(&config_path).unwrap();
+        assert!(!config.is_macos_app_bundle().unwrap());
+        assert_eq!(config.resources_dir().unwrap(), install.join("resources"));
+        assert_eq!(config.installation_dir().unwrap(), install);
     }
 
     #[test]
