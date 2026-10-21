@@ -199,8 +199,9 @@ function applyWindowIdentity(window, { appId, iconPath, launcher, productName })
 
   if (process.platform === "win32" && appId && typeof window.setAppDetails === "function") {
     const details = { appId };
-    if (iconPath) details.appIconPath = iconPath;
     if (launcher) {
+      details.appIconPath = launcher;
+      details.appIconIndex = 0;
       details.relaunchCommand = quoteWindowsPath(launcher);
       details.relaunchDisplayName = productName || appId;
     }

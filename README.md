@@ -69,6 +69,12 @@ Distribute this directory to users. Open `minitron.exe` on Windows or run `./min
 
 A Windows installer is also available through the [NSIS packaging script](docs/usage.md#windows-installer).
 
+### electron-builder
+
+If your app already uses electron-builder, the [Minitron adapter](packages/electron-builder/README.md) adds the launcher to a Windows NSIS build. Your regular Electron and Node.js development flow remains unchanged. The adapter's Linux `afterPack` path is available, but the complete installer flow has not been confirmed; macOS packaging through the adapter is not supported yet. Minitron launcher downloads remain available for Windows x64, Linux x64, and macOS x64 / arm64.
+
+See the [copyable electron-builder configuration](examples/electron-builder/README.md) and the [Karvis integration example](examples/karvis/README.md).
+
 ## Language
 
 The launcher follows the system display language: Simplified Chinese for Chinese systems, English otherwise. Override it with `MINITRON_LANG=en`, `zh` or `auto`.

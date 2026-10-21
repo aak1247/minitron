@@ -89,7 +89,8 @@ test("activates runtime identity and routes Windows relaunch integrations throug
 
   const details = findCall(record, "windowDetails").details;
   assert.equal(details.appId, "com.acme.desktop");
-  assert.equal(details.appIconPath, path.join(fixture.resourcesDir, "minitron-icon.png"));
+  assert.equal(details.appIconPath, launcher);
+  assert.equal(details.appIconIndex, 0);
   assert.equal(details.relaunchCommand, `"${launcher}"`);
   assert.equal(details.relaunchDisplayName, "Acme Desktop");
   assert.deepEqual(findCall(record, "windowIcon").iconPath, path.join(fixture.resourcesDir, "minitron-icon.png"));

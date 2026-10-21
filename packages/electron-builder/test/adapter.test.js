@@ -200,7 +200,23 @@ test("afterPack rejects a host Electron distribution for a different target befo
   assert.equal(fs.readFileSync(path.join(fixture.appOutDir, "Fixture.exe"), "utf8"), "electron-branded-binary");
 });
 
-async function makeFixture(t) {
+test("afterPack preserves the Linux executable name and replaces only the official Linux runtime", async (t) => {
+  const fixture = await makeFixture(t, "linux");
+  const context = makeContext(fixture, "linux");
+  await afterPack(context, {
+    launcherPath: fixture.launcherPath,
+    manifestUrl: "https://updates.example.test/manifest.json",
+    iconPath: fixture.iconPath,
+  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" }));
+
+  assert.equal(fs.readFileSync(path.join(fixture.appOutDir, "fixture"), "utf8"), "launcher-binary");
+  assert.equal(fs.existsSync(path.join(fixture.appOutDir, "electron")), false);
+  const manifest = JSON.parse(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"));
+  assert.equal(manifest.metadata.minitron.executableName, "fixture");
+  assert.equal(fs.readFileSync(path.join(fixture.resourcesDir, "custom.pak"), "utf8"), "application-owned-content");
+});
+
+async function makeFixture(t, platform = "win32") {
   const root = makeTempDir();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const projectDir = path.join(root, "project");
@@ -233,18 +249,20 @@ async function makeFixture(t) {
   const iconPath = path.join(projectDir, "assets", "icon.png");
   fs.mkdirSync(path.dirname(iconPath), { recursive: true });
   fs.writeFileSync(iconPath, PNG);
-  fs.writeFileSync(path.join(appOutDir, "Fixture.exe"), "electron-branded-binary");
-  fs.writeFileSync(path.join(appOutDir, "electron.exe"), "electron-runtime-binary");
+  const runtimeBinaryName = platform === "win32" ? "electron.exe" : "electron";
+  const appExecutableName = platform === "win32" ? "Fixture.exe" : "fixture";
+  fs.writeFileSync(path.join(appOutDir, appExecutableName), "electron-branded-binary");
+  fs.writeFileSync(path.join(appOutDir, runtimeBinaryName), "electron-runtime-binary");
   fs.writeFileSync(path.join(appOutDir, "extra-file.json"), "builder-extra-file");
   fs.writeFileSync(path.join(resourcesDir, "user-data.bin"), "user-resource");
   fs.writeFileSync(path.join(resourcesDir, "custom.pak"), "application-owned-content");
 
   fs.writeFileSync(path.join(electronDist, "version"), `${RUNTIME_VERSION}\n`);
-  fs.writeFileSync(path.join(electronDist, "electron.exe"), "electron-runtime-binary");
+  fs.writeFileSync(path.join(electronDist, runtimeBinaryName), "electron-runtime-binary");
   fs.writeFileSync(path.join(electronDist, "resources", "runtime.pak"), "official-runtime-content");
   fs.writeFileSync(path.join(resourcesDir, "runtime.pak"), "official-runtime-content");
   fs.writeFileSync(path.join(electronDist, "resources", "custom.pak"), "official-runtime-content");
-  return { root, projectDir, appOutDir, resourcesDir, archivePath, electronDist, launcherPath, iconPath };
+  return { root, projectDir, appOutDir, resourcesDir, archivePath, electronDist, launcherPath, iconPath, appExecutableName };
 }
 
 function makeContext(fixture, platform) {

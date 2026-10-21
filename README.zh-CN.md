@@ -69,6 +69,12 @@ application/
 
 Windows 还可通过 [NSIS 打包脚本](docs/usage.zh-CN.md#windows-安装包)生成安装程序。
 
+### electron-builder
+
+如果应用已使用 electron-builder，可通过 [Minitron 适配器](packages/electron-builder/README.md)为 Windows NSIS 构建加入启动器。日常 Electron 和 Node.js 开发流程保持不变。适配器已包含 Linux `afterPack` 路径，但完整安装包流程尚未确认；适配器暂不支持 macOS 打包。Minitron 启动器仍提供 Windows x64、Linux x64、macOS x64 和 arm64 版本。
+
+参见[可复制的 electron-builder 配置](examples/electron-builder/README.md)和[Karvis 接入示例](examples/karvis/README.md)。
+
 ## 语言
 
 启动器跟随系统显示语言：中文系统使用简体中文，其他语言使用英语。可通过 `MINITRON_LANG=en`、`zh` 或 `auto` 手动指定。

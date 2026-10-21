@@ -54,7 +54,7 @@ async function afterPack(context, options, spawn = spawnSync) {
     throw new Error("Minitron afterPack requires electron-builder's resolved packager context");
   }
 
-  const projectDir = resolveProjectDir(packager);
+  const projectDir = options.projectDir === undefined ? resolveProjectDir(packager) : path.resolve(options.projectDir);
   const appOutDir = path.resolve(context.appOutDir);
   const resourcesDir = path.join(appOutDir, "resources");
   if (!fs.existsSync(appOutDir) || !fs.statSync(appOutDir).isDirectory()) {
@@ -394,7 +394,6 @@ function replaceExecutable(sourcePath, destinationPath, verifiedVersion, targetP
 async function removeOfficialRuntimeFiles(electronDist, appOutDir, executableRelativePath) {
   const inventory = walkOfficialTree(electronDist);
   const normalizedExecutable = toPosix(executableRelativePath);
-  const removeDirectories = new Set();
 
   for (const item of inventory) {
     const relative = toPosix(item.relativePath);
@@ -414,21 +413,6 @@ async function removeOfficialRuntimeFiles(electronDist, appOutDir, executableRel
       }
     } else if (item.type === "file" && packagedStat.isFile() && packagedStat.size === item.size) {
       if (await filesEqual(item.sourcePath, packagedPath)) fs.unlinkSync(packagedPath);
-    }
-    let parent = path.dirname(item.relativePath);
-    while (parent !== "." && parent !== "") {
-      removeDirectories.add(parent);
-      parent = path.dirname(parent);
-    }
-  }
-
-  for (const relative of [...removeDirectories].sort((left, right) => depth(right) - depth(left))) {
-    const directory = path.join(appOutDir, relative);
-    if (relative === "resources") continue;
-    try {
-      fs.rmdirSync(directory);
-    } catch (error) {
-      if (error.code !== "ENOTEMPTY" && error.code !== "EEXIST" && error.code !== "ENOENT") throw error;
     }
   }
 }
@@ -469,10 +453,6 @@ function hashFile(filePath) {
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("end", () => resolve(hash.digest("hex")));
   });
-}
-
-function depth(value) {
-  return value.split(path.sep).length;
 }
 
 function toPosix(value) {

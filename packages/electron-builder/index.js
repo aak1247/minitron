@@ -19,7 +19,11 @@ function withMinitron(config, options) {
 
   const launcherPath = requireString(options.launcherPath, "options.launcherPath");
   const manifestUrl = requireString(options.manifestUrl, "options.manifestUrl");
-  const projectDir = path.resolve(options.projectDir || config.projectDir || process.cwd());
+  const configuredProjectDir = options.projectDir === undefined ? config.projectDir : options.projectDir;
+  if (configuredProjectDir !== undefined && (typeof configuredProjectDir !== "string" || configuredProjectDir.trim() === "")) {
+    throw new TypeError("options.projectDir or config.projectDir must be a non-empty path when provided");
+  }
+  const projectDir = path.resolve(configuredProjectDir || process.cwd());
   const lifecycleIncludePath = options.installerIncludePath === undefined
     ? DEFAULT_INSTALLER_INCLUDE
     : resolveFromProject(requireString(options.installerIncludePath, "options.installerIncludePath"), projectDir);
@@ -34,6 +38,7 @@ function withMinitron(config, options) {
     },
     afterPack: createAfterPackHook(config.afterPack, {
       launcherPath,
+      projectDir: configuredProjectDir === undefined ? undefined : projectDir,
       manifestUrl,
       allowLocalhostHttp: options.allowLocalhostHttp,
       manifestPublicKey: options.manifestPublicKey,
