@@ -28,6 +28,7 @@ test("afterPack converts a branded .app, strips builder-renamed helper variants,
   }, () => ({ status: 0, stdout: "0.3.0", stderr: "" }));
 
   assert.equal(fs.readFileSync(fixture.mainInfoPlist, "utf8"), MAIN_INFO_PLIST);
+  assert.equal(fs.readFileSync(fixture.mainPkgInfoPath, "utf8"), "APPL????");
   assert.equal(fs.readFileSync(fixture.brandIconPath, "utf8"), "branded-icon");
   assert.deepEqual(fs.readFileSync(fixture.executablePath), fixture.launcherBytes);
   assert.deepEqual(fs.readFileSync(fixture.electronExecutablePath), fixture.electronExecutableBytes);
@@ -220,6 +221,8 @@ async function makeMacFixture(t, runtimeArch, launcherArch = runtimeArch) {
     }));
     fs.writeFileSync(path.join(sourceHelperContents, "MacOS", sourceExecutable), `electron-helper-${index}`);
     fs.writeFileSync(path.join(packagedHelperContents, "MacOS", packagedExecutable), `electron-helper-${index}`);
+    fs.writeFileSync(path.join(sourceHelperContents, "PkgInfo"), "APPL????");
+    fs.writeFileSync(path.join(packagedHelperContents, "PkgInfo"), "APPL????");
     fs.writeFileSync(path.join(sourceHelperContents, "Resources", "official-helper.dat"), `official-helper-resource-${index}`);
     fs.writeFileSync(path.join(packagedHelperContents, "Resources", "official-helper.dat"), `official-helper-resource-${index}`);
     helperBundlePaths.push(packagedBundle);
@@ -240,7 +243,8 @@ async function makeMacFixture(t, runtimeArch, launcherArch = runtimeArch) {
   fs.writeFileSync(mainInfoPlist, MAIN_INFO_PLIST);
   const brandIconPath = path.join(resourcesDir, "icon.icns");
   fs.writeFileSync(brandIconPath, "branded-icon");
-  fs.writeFileSync(path.join(contentsDir, "PkgInfo"), "APPLfixture");
+  const mainPkgInfoPath = path.join(contentsDir, "PkgInfo");
+  fs.writeFileSync(mainPkgInfoPath, "APPL????");
   const executablePath = path.join(macosDir, "Fixture");
   fs.writeFileSync(executablePath, sourceExecutableBytes);
   fs.writeFileSync(runtimeFrameworkBinary, "electron-framework-binary");
@@ -275,6 +279,7 @@ async function makeMacFixture(t, runtimeArch, launcherArch = runtimeArch) {
     runtimeFrameworkBinary,
     helperBundlePaths,
     mainInfoPlist,
+    mainPkgInfoPath,
     brandIconPath,
     customFrameworkPath,
     archivePath,

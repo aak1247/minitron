@@ -226,8 +226,7 @@ function mapElectronContentsPath(relative, names) {
 
 function shouldPreserveMacPath(relative) {
   const portable = toPosix(relative);
-  const base = path.posix.basename(portable);
-  if (portable === "Info.plist" || base === "PkgInfo") return true;
+  if (portable === "Info.plist" || portable === "PkgInfo") return true;
   if (portable === "Resources/icon.icns" || portable === "Resources/minitron-icon.png") return true;
   if (portable === "Resources/app.asar" || portable.startsWith("Resources/app.asar.unpacked/")) return true;
   return false;
