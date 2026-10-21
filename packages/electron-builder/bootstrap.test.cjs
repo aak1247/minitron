@@ -169,7 +169,7 @@ test("sets the macOS dock icon when the app exposes the dock API", (t) => {
 });
 
 function createFixture(t, { main, type = "commonjs", desktopName }) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "minitron-bootstrap-test-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "minitron-bootstrap-test-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
   const resourcesDir = path.join(root, "resources");
