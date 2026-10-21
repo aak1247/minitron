@@ -396,7 +396,11 @@ async function buildVersion(settings) {
     : {};
   delete configuredMacEnv.KARVIS_E2E_DIAGNOSTIC_FILE;
   delete configuredMacEnv.KARVIS_E2E_USER_DATA;
-  const macEnv = { ...configuredMacEnv, ELECTRON_RUNTIME_ROOT: settings.runtimeRoot };
+  const macEnv = {
+    ...configuredMacEnv,
+    ELECTRON_RUNTIME_ROOT: settings.runtimeRoot,
+    ELECTRON_ENABLE_LOGGING: '1',
+  };
   const macBase = isRecord(settings.sourceBuild.mac) ? settings.sourceBuild.mac : {};
   const macConfigBase = { ...macBase };
   delete macConfigBase.identity;
