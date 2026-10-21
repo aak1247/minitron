@@ -400,11 +400,12 @@ async function buildVersion(settings) {
     KARVIS_E2E_USER_DATA: targetUserDataPath,
   };
   const macBase = isRecord(settings.sourceBuild.mac) ? settings.sourceBuild.mac : {};
+  const macConfigBase = { ...macBase };
+  delete macConfigBase.identity;
   const macExtendInfo = isRecord(macBase.extendInfo) ? macBase.extendInfo : {};
   const macConfig = process.platform === 'darwin' ? {
-    ...macBase,
+    ...macConfigBase,
     target: ['dmg', 'pkg'],
-    identity: null,
     extendInfo: { ...macExtendInfo, LSEnvironment: macEnv },
   } : undefined;
   const pkgConfig = process.platform === 'darwin' ? {
@@ -432,8 +433,8 @@ async function buildVersion(settings) {
     extraMetadata: { ...(isRecord(settings.sourceBuild.extraMetadata) ? settings.sourceBuild.extraMetadata : {}), main: 'dist/main/index.js' },
     ...(process.platform === 'linux' ? {
       linux: linuxConfig,
-      deb: { ...(isRecord(settings.sourceBuild.deb) ? settings.sourceBuild.deb : {}), maintainer: 'Test <test@example.invalid>', ...hooks },
-      rpm: { ...(isRecord(settings.sourceBuild.rpm) ? settings.sourceBuild.rpm : {}), ...hooks },
+      deb: { ...(isRecord(settings.sourceBuild.deb) ? settings.sourceBuild.deb : {}), maintainer: 'Test <test@example.invalid>', packageName, ...hooks },
+      rpm: { ...(isRecord(settings.sourceBuild.rpm) ? settings.sourceBuild.rpm : {}), packageName, ...hooks },
     } : { mac: macConfig, pkg: pkgConfig }),
   };
   if (buildConfig.asar !== true) throw new Error('Minitron E2E requires ASAR packaging');
@@ -442,6 +443,12 @@ async function buildVersion(settings) {
     "'use strict';",
     `const { withMinitron } = require(${JSON.stringify(adapterPath)});`,
     `const config = ${JSON.stringify(buildConfig, null, 2)};`,
+    `if (process.platform === 'darwin') {`,
+    `  const { execFileSync } = require('node:child_process');`,
+    `  config.mac.sign = async ({ app }) => {`,
+    `    execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' });`,
+    `  };`,
+    `}`,
     `module.exports = withMinitron(config, ${JSON.stringify({
       projectDir: projectCopy,
       launcherPath,
@@ -575,7 +582,11 @@ async function step(name, action) {
 async function installPackage(format, build, scenario) {
   if (process.platform === 'linux') {
     if (format === 'deb') await runCommand('sudo', ['-n', 'apt-get', 'install', '-y', build.packages.deb], { timeout: 5 * 60_000, label: 'apt-install-2.0.0' });
-    else await runCommand('sudo', ['-n', 'rpm', '-U', '--replacepkgs', '--nodeps', build.packages.rpm], { timeout: 5 * 60_000, label: 'rpm-install-2.0.0' });
+    else {
+      const rpmName = (await runCommand('rpm', ['-qp', '--qf', '%{NAME}', build.packages.rpm], { label: 'query-rpm-file-name' })).stdout.trim();
+      assert.equal(rpmName, packageName, `RPM artifact name ${rpmName || '(empty)'} does not match expected package name ${packageName}`);
+      await runCommand('sudo', ['-n', 'rpm', '-U', '--replacepkgs', '--nodeps', build.packages.rpm], { timeout: 5 * 60_000, label: 'rpm-install-2.0.0' });
+    }
     scenario.packageName = packageName;
     await verifyLinuxPackageVersion(format, '2.0.0');
     await verifyLinuxInstalledHooks('2.0.0');
