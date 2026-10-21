@@ -152,9 +152,9 @@ async function install(name, artifacts, appId = 'com.example.myapp', manifestPat
   if (process.platform !== 'win32') await fs.chmod(executable, 0o755);
   await fs.cp(artifacts.out, path.join(directory, 'resources'), { recursive: true });
   await fs.writeFile(path.join(directory, configName), `app_id = ${JSON.stringify(appId)}\nrequired_runtime = ${JSON.stringify(options['runtime-version'])}\napp_version = "1.0.0"\nmanifest_url = ${JSON.stringify(baseUrl + manifestPath)}\nallow_localhost_http = true\nmanifest_public_key = ${JSON.stringify(publicKeyBase64)}\n`);
-  const updates = process.platform === 'win32' ? path.join(directory, 'updates')
-    : (await run(executable, ['--state-dir'])).stdout.trim();
+  const updates = (await run(executable, ['--state-dir'])).stdout.trim();
   assert(path.isAbsolute(updates), 'launcher must report an absolute state directory');
+  assert(!updates.startsWith(directory + path.sep), 'mutable state must stay outside the installation');
   return { directory, executable, updates, pending: path.join(updates, 'pending.json'), active: path.join(updates, 'active.json') };
 }
 const runtimePath = (root, version) => path.join(root, 'versions', runtimePlatform, `v${version}`);
