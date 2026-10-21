@@ -30,6 +30,14 @@ v0.2.0，使用内置示例应用和 Electron 32.2.0。下载列为压缩包体�
 
 Karvis AI 2.0.0 的 Windows 安装包（Electron 28.3.3、NSIS）：**77.34 MiB → 10.56 MiB**，缩小约 **86%**。共享运行时另计，在首次启动时下载一次。
 
+Karvis AI 2.0.0 的 Linux 与 macOS 安装包（Electron 28.3.3，共享运行时单独下载）：
+
+| 平台 | 格式 | 安装包体积 |
+|---|---|---:|
+| Linux x64 | DEB / RPM | 7.65 / 7.67 MiB |
+| macOS Intel | PKG / DMG | 12.79 / 14.24 MiB |
+| macOS Apple Silicon | PKG / DMG | 12.55 / 13.98 MiB |
+
 ## 安装
 
 直接下载[预编译二进制](https://github.com/aak1247/minitron/releases/latest)，或用脚本安装最新启动器，无需 Rust 工具链。

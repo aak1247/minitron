@@ -30,6 +30,14 @@ The example app includes the launcher, configuration and app resources; its shar
 
 Karvis AI 2.0.0 on Windows (Electron 28.3.3, NSIS): **77.34 MiB → 10.56 MiB**, about **86% smaller**. The shared runtime is separate and downloads once on first launch.
 
+Karvis AI 2.0.0 installers on Linux and macOS (Electron 28.3.3, shared runtime downloaded separately):
+
+| Platform | Formats | Installer sizes |
+|---|---|---:|
+| Linux x64 | DEB / RPM | 7.65 / 7.67 MiB |
+| macOS Intel | PKG / DMG | 12.79 / 14.24 MiB |
+| macOS Apple Silicon | PKG / DMG | 12.55 / 13.98 MiB |
+
 ## Install
 
 Download a [prebuilt binary](https://github.com/aak1247/minitron/releases/latest), or install the latest launcher with a script. No Rust toolchain is needed.
