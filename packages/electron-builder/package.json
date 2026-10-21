@@ -22,7 +22,8 @@
     "electron-builder": "^24.13.3"
   },
   "dependencies": {
-    "@electron/asar": "3.4.1"
+    "@electron/asar": "3.4.1",
+    "chromium-pickle-js": "^0.2.0"
   },
   "files": [
     "index.js",

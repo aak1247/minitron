@@ -39,9 +39,11 @@ test("activates runtime identity and routes Windows relaunch integrations throug
   writeAppFile(fixture, "dist/main.js", `
     const { app } = require("electron");
     globalThis.__electronMockCalls.push({ type: "entry", mainFilename: require.main.filename, cwd: process.cwd() });
+    process.argv = [process.execPath, "C:/Program Files/Acme/resources/app.asar", "--business-argument"];
     app.relaunch();
     app.relaunch({ args: ["--keep-default-path"] });
     app.relaunch({ args: ["--keep-this"], execPath: "C:/developer/custom.exe" });
+    app.relaunch({ execPath: "C:/developer/custom.exe" });
     app.setLoginItemSettings({ openAtLogin: true, args: ["--login-flag"] });
     app.setLoginItemSettings({ openAtLogin: true, path: "C:/developer/login.exe", args: ["--custom-login"] });
     app.getLoginItemSettings({ args: ["--login-flag"] });
@@ -73,12 +75,14 @@ test("activates runtime identity and routes Windows relaunch integrations throug
   assert.equal(record.execPath, process.execPath);
   assert.deepEqual(findCall(record, "setName").args, ["Acme Desktop"]);
   assert.deepEqual(findCall(record, "setAppUserModelId").args, ["com.acme.desktop"]);
-  assert.deepEqual(findCall(record, "setPath").args, ["userData", path.join(fixture.appDataDir, "com.acme.desktop")]);
-  assert.equal(fs.existsSync(path.join(fixture.appDataDir, "com.acme.desktop")), true);
+  assert.deepEqual(findCall(record, "setPath").args, ["userData", path.join(fixture.appDataDir, "Acme Desktop")]);
+  assert.equal(record.userDataPath, path.join(fixture.appDataDir, "Acme Desktop"));
+  assert.equal(fs.existsSync(path.join(fixture.appDataDir, "Acme Desktop")), true);
 
-  assert.deepEqual(findCall(record, "relaunch").args, [{ execPath: launcher }]);
+  assert.deepEqual(findCall(record, "relaunch").args, [{ args: ["--business-argument"], execPath: launcher }]);
   assert.deepEqual(findCalls(record, "relaunch")[1].args, [{ args: ["--keep-default-path"], execPath: launcher }]);
   assert.deepEqual(findCalls(record, "relaunch")[2].args, [{ args: ["--keep-this"], execPath: "C:/developer/custom.exe" }]);
+  assert.deepEqual(findCalls(record, "relaunch")[3].args, [{ args: ["--business-argument"], execPath: "C:/developer/custom.exe" }]);
   assert.deepEqual(findCall(record, "setLoginItemSettings").args, [{ openAtLogin: true, args: ["--login-flag"], path: launcher }]);
   assert.deepEqual(findCalls(record, "setLoginItemSettings")[1].args, [{ openAtLogin: true, path: "C:/developer/login.exe", args: ["--custom-login"] }]);
   assert.deepEqual(findCall(record, "getLoginItemSettings").args, [{ args: ["--login-flag"], path: launcher }]);
@@ -230,13 +234,13 @@ function createElectronMockPreload() {
     const calls = [];
     const originalLoad = Module._load;
     const appDataDir = process.env.TEST_APP_DATA;
-    let userDataPath = path.join(appDataDir, "default");
+    let customUserDataPath;
     let appName = "Original Name";
     const app = new EventEmitter();
     const record = (type) => (...args) => { calls.push({ type, args }); return true; };
     app.getAppPath = () => path.join(process.env.TEST_RESOURCES_DIR, "app.asar");
-    app.getPath = (name) => name === "appData" ? appDataDir : userDataPath;
-    app.setPath = (name, value) => { calls.push({ type: "setPath", args: [name, value] }); if (name === "userData") userDataPath = value; };
+    app.getPath = (name) => name === "appData" ? appDataDir : customUserDataPath || path.join(appDataDir, appName);
+    app.setPath = (name, value) => { calls.push({ type: "setPath", args: [name, value] }); if (name === "userData") customUserDataPath = value; };
     app.setName = (name) => { appName = name; calls.push({ type: "setName", args: [name] }); };
     app.getName = () => appName;
     app.setAppUserModelId = record("setAppUserModelId");
@@ -263,6 +267,7 @@ function createElectronMockPreload() {
         resourcesDescriptor: descriptor && { writable: descriptor.writable, configurable: descriptor.configurable },
         forceIsPackaged: process.env.ELECTRON_FORCE_IS_PACKAGED,
         execPath: process.execPath,
+        userDataPath: app.getPath("userData"),
       }));
     });
   `;

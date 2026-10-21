@@ -64,7 +64,7 @@ function configureMinitronRuntime(app, packageManifest, launcher) {
     if (desktopName) tryCall(() => app.setDesktopName(desktopName));
   }
 
-  if (isSafePathSegment(appId)) configureUserDataPath(app, appId);
+  configureUserDataPath(app, productName);
   configureLauncherRouting(app, launcher);
 
   if (process.platform === "darwin" && iconPath && app.dock && typeof app.dock.setIcon === "function") {
@@ -119,7 +119,7 @@ function defineResourcesPath(resourcesDir) {
   }
 }
 
-function configureUserDataPath(app, appId) {
+function configureUserDataPath(app, productName) {
   if (
     hasExplicitUserDataArgument(process.argv) ||
     !app ||
@@ -130,9 +130,14 @@ function configureUserDataPath(app, appId) {
   }
 
   try {
+    const appName = firstNonEmptyString(
+      productName,
+      typeof app.getName === "function" ? app.getName() : null,
+    );
+    if (!isSafePathSegment(appName)) return;
     const appData = app.getPath("appData");
     if (!nonEmptyString(appData)) return;
-    const userData = path.join(appData, appId);
+    const userData = path.join(appData, appName);
     fs.mkdirSync(userData, { recursive: true });
     app.setPath("userData", userData);
   } catch {
@@ -151,10 +156,12 @@ function configureLauncherRouting(app, launcher) {
   patchAppMethod(app, "relaunch", (args) => {
     const options = args[0];
     if (!options || typeof options !== "object" || Array.isArray(options)) {
-      return [{ execPath: launcher }, ...args.slice(1)];
+      return [{ args: process.argv.slice(2), execPath: launcher }, ...args.slice(1)];
     }
-    if (nonEmptyString(options.execPath)) return args;
-    return [{ ...options, execPath: launcher }, ...args.slice(1)];
+    const routedOptions = { ...options };
+    if (routedOptions.args === undefined) routedOptions.args = process.argv.slice(2);
+    if (!nonEmptyString(routedOptions.execPath)) routedOptions.execPath = launcher;
+    return [routedOptions, ...args.slice(1)];
   });
 
   if (process.platform !== "win32") return;
@@ -265,7 +272,8 @@ function firstNonEmptyString(...values) {
 
 function isSafePathSegment(value) {
   return typeof value === "string" &&
-    /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value) &&
+    value.length > 0 &&
+    !/[\\/:*?"<>|\0]/.test(value) &&
     value !== "." &&
     value !== "..";
 }

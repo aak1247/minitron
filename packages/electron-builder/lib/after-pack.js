@@ -5,7 +5,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { spawnSync } = require("node:child_process");
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const asar = require("@electron/asar");
+const pickle = require("chromium-pickle-js");
 const {
   renderConfig,
   validateManifestUrl,
@@ -459,6 +462,10 @@ function toPosix(value) {
   return value.replaceAll("\\", "/");
 }
 
+function toNativeAsarPath(value) {
+  return value.split("/").join(path.sep);
+}
+
 async function patchAsar(archivePath, resourcesDir, metadata) {
   const bootstrapPath = path.join(__dirname, "..", BOOTSTRAP_ENTRY);
   assertFile(bootstrapPath, "Minitron bootstrap");
@@ -499,6 +506,7 @@ async function patchAsar(archivePath, resourcesDir, metadata) {
     if (fs.existsSync(sourceSidecar)) {
       mergeSidecarExtras(sourceSidecar, outputSidecar, knownSidecarPaths);
     }
+    await preserveAsarMetadata(tempArchive, rawHeader, extractedRoot);
     verifyPatchedArchive(tempArchive, appManifest, metadata, rawHeader);
 
     let archiveMoved = false;
@@ -544,6 +552,136 @@ async function patchAsar(archivePath, resourcesDir, metadata) {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   }
+}
+
+async function preserveAsarMetadata(archivePath, originalHeader, extractedRoot) {
+  const originalHasIntegrity = headerHasIntegrity(originalHeader);
+  const generated = asar.getRawHeader(archivePath);
+  const changedFiles = new Map([
+    ["package.json", path.join(extractedRoot, "package.json")],
+  ]);
+
+  walkAsarLeaves(originalHeader, (relativePath, sourceEntry) => {
+    const outputEntry = findAsarEntry(generated.header, relativePath);
+    if (!outputEntry || outputEntry.files) {
+      throw new Error(`ASAR repacking lost original member metadata: ${relativePath}`);
+    }
+    copyAsarMetadata(sourceEntry, outputEntry);
+    const changedFile = changedFiles.get(relativePath);
+    if (changedFile) {
+      if (originalHasIntegrity) outputEntry.integrity = computeIntegrity(fs.readFileSync(changedFile));
+      else delete outputEntry.integrity;
+      changedFiles.delete(relativePath);
+    }
+  });
+
+  const generatedLeaves = [];
+  walkAsarLeaves(generated.header, (relativePath, entry) => generatedLeaves.push([relativePath, entry]));
+  for (const [relativePath, entry] of generatedLeaves) {
+    if (!findAsarEntry(originalHeader, relativePath)) {
+      if (relativePath === BOOTSTRAP_ENTRY && originalHasIntegrity) {
+        entry.integrity = computeIntegrity(fs.readFileSync(path.join(extractedRoot, BOOTSTRAP_ENTRY)));
+      } else if (!originalHasIntegrity) {
+        delete entry.integrity;
+      }
+      if (relativePath === BOOTSTRAP_ENTRY) changedFiles.delete(relativePath);
+      continue;
+    }
+    if (!originalHasIntegrity) delete entry.integrity;
+  }
+
+  if (changedFiles.size > 0) {
+    throw new Error(`ASAR repacking is missing required changed members: ${[...changedFiles.keys()].join(", ")}`);
+  }
+
+  const headerPickle = pickle.createEmpty();
+  headerPickle.writeString(JSON.stringify(generated.header));
+  const headerBuffer = headerPickle.toBuffer();
+  const sizePickle = pickle.createEmpty();
+  sizePickle.writeUInt32(headerBuffer.length);
+  const prefix = Buffer.concat([sizePickle.toBuffer(), headerBuffer]);
+  const payloadStart = 8 + generated.headerSize;
+  const archiveStat = fs.statSync(archivePath);
+  if (payloadStart > archiveStat.size) throw new Error("Generated ASAR header extends past the archive payload");
+
+  const rewrittenPath = `${archivePath}.metadata-${process.pid}-${crypto.randomUUID()}`;
+  const backupPath = `${archivePath}.pre-metadata-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    const archiveContents = async function* () {
+      yield prefix;
+      for await (const chunk of fs.createReadStream(archivePath, { start: payloadStart })) yield chunk;
+    };
+    await pipeline(
+      Readable.from(archiveContents()),
+      fs.createWriteStream(rewrittenPath, { flags: "wx" }),
+    );
+    fs.renameSync(archivePath, backupPath);
+    try {
+      fs.renameSync(rewrittenPath, archivePath);
+      fs.rmSync(backupPath, { force: true });
+    } catch (error) {
+      if (!fs.existsSync(archivePath) && fs.existsSync(backupPath)) fs.renameSync(backupPath, archivePath);
+      throw error;
+    }
+  } finally {
+    fs.rmSync(rewrittenPath, { force: true });
+  }
+  asar.uncache(archivePath);
+}
+
+function headerHasIntegrity(header) {
+  let found = false;
+  walkAsarLeaves(header, (_relativePath, entry) => {
+    if (entry.integrity && typeof entry.integrity === "object") found = true;
+  });
+  return found;
+}
+
+function walkAsarLeaves(header, callback) {
+  const walk = (directory, prefix) => {
+    for (const [name, entry] of Object.entries(directory.files || {})) {
+      const relativePath = prefix ? `${prefix}/${name}` : name;
+      if (entry.files) walk(entry, relativePath);
+      else callback(relativePath, entry);
+    }
+  };
+  if (!header || !header.files || typeof header.files !== "object") {
+    throw new Error("The packaged ASAR archive has an invalid header");
+  }
+  walk(header, "");
+}
+
+function findAsarEntry(header, relativePath) {
+  let current = header;
+  for (const segment of relativePath.split("/")) {
+    current = current && current.files && current.files[segment];
+    if (!current) return undefined;
+  }
+  return current;
+}
+
+function copyAsarMetadata(source, destination) {
+  if (typeof source.executable === "boolean") destination.executable = source.executable;
+  else delete destination.executable;
+  if (source.integrity && typeof source.integrity === "object") {
+    destination.integrity = structuredClone(source.integrity);
+  } else {
+    delete destination.integrity;
+  }
+}
+
+function computeIntegrity(contents) {
+  const blockSize = 4 * 1024 * 1024;
+  const blocks = [];
+  for (let offset = 0; offset < contents.length; offset += blockSize) {
+    blocks.push(crypto.createHash("sha256").update(contents.subarray(offset, offset + blockSize)).digest("hex"));
+  }
+  return {
+    algorithm: "SHA256",
+    hash: crypto.createHash("sha256").update(contents).digest("hex"),
+    blockSize,
+    blocks,
+  };
 }
 
 function prepareManifest(originalManifest, metadata) {
@@ -706,13 +844,13 @@ function verifyPatchedArchive(archivePath, expectedManifest, metadata, originalH
     throw new Error("Minitron ASAR bootstrap entry did not survive archive repacking");
   }
   const originalMain = validateOriginalMain(manifest.minitronOriginalMain);
-  const mainStat = asar.statFile(archivePath, originalMain);
+  const mainStat = asar.statFile(archivePath, toNativeAsarPath(originalMain));
   if (!mainStat || mainStat.files) throw new Error(`Original application main is missing from repacked ASAR: ${originalMain}`);
   const bootstrapStat = asar.statFile(archivePath, BOOTSTRAP_ENTRY);
   if (!bootstrapStat || bootstrapStat.unpacked) throw new Error("Minitron bootstrap must be embedded in app.asar");
   const originalUnpacked = collectUnpackedFiles(originalHeader);
   for (const file of originalUnpacked) {
-    const stat = asar.statFile(archivePath, file);
+    const stat = asar.statFile(archivePath, toNativeAsarPath(file));
     if (!stat.unpacked) throw new Error(`Repacking changed an ASAR unpacked member into an archived member: ${file}`);
     const sidecarPath = path.join(`${archivePath}.unpacked`, ...file.split("/"));
     if (!lstatOrUndefined(sidecarPath)) throw new Error(`Repacking lost an ASAR unpacked sidecar file: ${file}`);

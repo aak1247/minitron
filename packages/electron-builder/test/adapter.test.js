@@ -4,8 +4,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const test = require("node:test");
 const asar = require("@electron/asar");
+const pickle = require("chromium-pickle-js");
 const { withMinitron } = require("../index");
 const { afterPack, createAfterPackHook, resolveRuntimeVersion, verifyLauncherVersion } = require("../lib/after-pack");
 
@@ -151,7 +153,7 @@ test("afterPack converts a Windows fixture, preserving ASAR unpacked files and u
 
   const manifest = JSON.parse(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"));
   assert.equal(manifest.main, "__minitron_bootstrap__.cjs");
-  assert.equal(manifest.minitronOriginalMain, "dist/main.js");
+  assert.equal(manifest.minitronOriginalMain, "dist/main/index.js");
   assert.equal(manifest.productName, "Fixture Product");
   assert.equal(manifest.desktopName, "com.fixture.app.desktop");
   assert.deepEqual(manifest.metadata, {
@@ -163,6 +165,11 @@ test("afterPack converts a Windows fixture, preserving ASAR unpacked files and u
     },
   });
   assert.notEqual(asar.statFile(fixture.archivePath, "__minitron_bootstrap__.cjs").unpacked, true);
+  const patchedHeader = asar.getRawHeader(fixture.archivePath).header;
+  assert.equal(patchedHeader.files.dist.files.main.files["index.js"].executable, true);
+  assert.deepEqual(patchedHeader.files.dist.files.main.files["index.js"].integrity, fixture.originalMainIntegrity);
+  assert.deepEqual(patchedHeader.files["package.json"].integrity, computeIntegrity(asar.extractFile(fixture.archivePath, "package.json")));
+  assert.deepEqual(patchedHeader.files["__minitron_bootstrap__.cjs"].integrity, computeIntegrity(asar.extractFile(fixture.archivePath, "__minitron_bootstrap__.cjs")));
   assert.ok(asar.extractFile(fixture.archivePath, "__minitron_bootstrap__.cjs").includes(Buffer.from("MINITRON_LAUNCHER")));
   assert.equal(asar.statFile(fixture.archivePath, "native/addon.node").unpacked, true);
   assert.equal(asar.extractFile(fixture.archivePath, "native/addon.node").toString("utf8"), "native-addon");
@@ -225,7 +232,7 @@ async function makeFixture(t, platform = "win32") {
   const appSourceDir = path.join(root, "app-source");
   const electronDist = path.join(root, "electron-dist");
   fs.mkdirSync(resourcesDir, { recursive: true });
-  fs.mkdirSync(path.join(appSourceDir, "dist"), { recursive: true });
+  fs.mkdirSync(path.join(appSourceDir, "dist", "main"), { recursive: true });
   fs.mkdirSync(path.join(appSourceDir, "native"), { recursive: true });
   fs.mkdirSync(electronDist, { recursive: true });
   fs.mkdirSync(path.join(electronDist, "resources"), { recursive: true });
@@ -233,14 +240,18 @@ async function makeFixture(t, platform = "win32") {
     name: "fixture-app",
     version: "1.2.3",
     productName: "Old Product Name",
-    main: "dist/main.js",
+    main: "dist/main/index.js",
     desktopName: "com.fixture.app.desktop",
     metadata: { retained: "user-metadata" },
   }, null, 2));
-  fs.writeFileSync(path.join(appSourceDir, "dist", "main.js"), "module.exports = 'original-main';\n");
+  fs.writeFileSync(path.join(appSourceDir, "dist", "main", "index.js"), "module.exports = 'original-main';\n");
   fs.writeFileSync(path.join(appSourceDir, "native", "addon.node"), "native-addon");
   const archivePath = path.join(resourcesDir, "app.asar");
   await asar.createPackageWithOptions(appSourceDir, archivePath, { unpack: "**/*.node" });
+  const originalHeader = asar.getRawHeader(archivePath).header;
+  const originalMainIntegrity = structuredClone(originalHeader.files.dist.files.main.files["index.js"].integrity);
+  originalHeader.files.dist.files.main.files["index.js"].executable = true;
+  rewriteFixtureHeader(archivePath, originalHeader);
   fs.mkdirSync(path.join(`${archivePath}.unpacked`, "native"), { recursive: true });
   fs.writeFileSync(path.join(`${archivePath}.unpacked`, "native", "developer-extra.bin"), "untracked-sidecar-extra");
 
@@ -262,7 +273,37 @@ async function makeFixture(t, platform = "win32") {
   fs.writeFileSync(path.join(electronDist, "resources", "runtime.pak"), "official-runtime-content");
   fs.writeFileSync(path.join(resourcesDir, "runtime.pak"), "official-runtime-content");
   fs.writeFileSync(path.join(electronDist, "resources", "custom.pak"), "official-runtime-content");
-  return { root, projectDir, appOutDir, resourcesDir, archivePath, electronDist, launcherPath, iconPath, appExecutableName };
+  return { root, projectDir, appOutDir, resourcesDir, archivePath, electronDist, launcherPath, iconPath, appExecutableName, originalMainIntegrity };
+}
+
+function rewriteFixtureHeader(archivePath, header) {
+  const original = fs.readFileSync(archivePath);
+  const rawHeader = asar.getRawHeader(archivePath);
+  const headerPickle = pickle.createEmpty();
+  headerPickle.writeString(JSON.stringify(header));
+  const headerBuffer = headerPickle.toBuffer();
+  const sizePickle = pickle.createEmpty();
+  sizePickle.writeUInt32(headerBuffer.length);
+  fs.writeFileSync(archivePath, Buffer.concat([
+    sizePickle.toBuffer(),
+    headerBuffer,
+    original.subarray(8 + rawHeader.headerSize),
+  ]));
+  asar.uncache(archivePath);
+}
+
+function computeIntegrity(contents) {
+  const blockSize = 4 * 1024 * 1024;
+  const blocks = [];
+  for (let offset = 0; offset < contents.length; offset += blockSize) {
+    blocks.push(crypto.createHash("sha256").update(contents.subarray(offset, offset + blockSize)).digest("hex"));
+  }
+  return {
+    algorithm: "SHA256",
+    hash: crypto.createHash("sha256").update(contents).digest("hex"),
+    blockSize,
+    blocks,
+  };
 }
 
 function makeContext(fixture, platform) {
