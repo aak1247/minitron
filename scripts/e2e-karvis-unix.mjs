@@ -444,7 +444,7 @@ async function buildVersion(settings) {
     `if (process.platform === 'darwin') {`,
     `  const { execFileSync } = require('node:child_process');`,
     `  config.mac.sign = async ({ app }) => {`,
-    `    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', app], { stdio: 'inherit' });`,
+    `    execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' });`,
     `  };`,
     `}`,
     `module.exports = withMinitron(config, ${JSON.stringify({
