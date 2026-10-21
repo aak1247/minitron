@@ -17,7 +17,7 @@ minitron 将 Electron 应用与运行时分开打包。应用安装包包含轻�
 
 ## 快速开始
 
-在现有 Electron 项目目录中运行。项目已编译时可跳过 `npm run build`。
+需要 Node.js 22.12 或更新版本。在目标操作系统上的现有 Electron 项目目录中运行。项目已编译时可跳过 `npm run build`。
 
 ```sh
 npm install -D minitron-builder
