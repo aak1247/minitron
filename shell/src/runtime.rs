@@ -38,6 +38,10 @@ struct InstallMarker {
     default_app_asar_size: u64,
     electron_bin_sha256: String,
     default_app_asar_sha256: String,
+    /// Present on macOS after the runtime Framework has been verified (and,
+    /// when needed, normalized in staging) before it is published to the cache.
+    #[serde(default)]
+    macos_framework_executable_sha256: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -288,6 +292,11 @@ fn ensure_inner(
     download::unzip(&package, &extracted).context("extract Electron runtime")?;
     eprintln!("RUNTIME_EXTRACTED:{}", key_id(key));
 
+    #[cfg(target_os = "macos")]
+    let macos_framework_executable_sha256 = Some(normalize_macos_runtime_framework(&extracted)?);
+    #[cfg(not(target_os = "macos"))]
+    let macos_framework_executable_sha256 = None;
+
     let (electron_bin, default_app_asar, bin_meta, asar_meta) =
         validate_runtime_structure(&extracted, key)?;
 
@@ -300,6 +309,7 @@ fn ensure_inner(
         default_app_asar_size: asar_meta.len(),
         electron_bin_sha256: sha256_file(&electron_bin)?,
         default_app_asar_sha256: sha256_file(&default_app_asar)?,
+        macos_framework_executable_sha256,
     };
     atomic_write(
         &extracted.join(INSTALL_MARKER),
@@ -330,6 +340,141 @@ fn ensure_inner(
     let _ = std::fs::remove_dir_all(download_dir);
     eprintln!("RUNTIME_READY:{}", key_id(key));
     Ok(runtime)
+}
+
+/// Validate the shared Electron Framework in the private extraction staging
+/// directory. A small set of official Electron archives contains a Framework
+/// whose embedded signature has no usable resource envelope (or no signature
+/// at all). Repair only those recognized cases before the runtime can be
+/// published or hard-linked into branded hosts.
+#[cfg(target_os = "macos")]
+fn normalize_macos_runtime_framework(root: &Path) -> Result<String> {
+    use std::process::Command;
+
+    let framework = root.join("Electron.app/Contents/Frameworks/Electron Framework.framework");
+    let metadata = std::fs::symlink_metadata(&framework)
+        .with_context(|| format!("inspect Electron Framework {}", framework.display()))?;
+    ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "Electron Framework is not a plain directory: {}",
+        framework.display()
+    );
+    validate_macos_framework_links(&framework)?;
+
+    let verification = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--verbose=2"])
+        .arg(&framework)
+        .output()
+        .context("verify extracted Electron Framework signature")?;
+    if !verification.status.success() {
+        let stderr = String::from_utf8_lossy(&verification.stderr);
+        let diagnostic = stderr.to_ascii_lowercase();
+        let recognized_incomplete_signature = diagnostic
+            .contains("code object is not signed at all")
+            || diagnostic
+                .contains("code has no resources but signature indicates they must be present");
+        ensure!(
+            recognized_incomplete_signature,
+            "extracted Electron Framework signature verification failed: {}",
+            stderr.trim()
+        );
+
+        let mut command = Command::new("/usr/bin/codesign");
+        command.args(["--deep", "--force", "--sign", "-", "--timestamp=none"]);
+        let framework_itself_is_unsigned = diagnostic.contains("code object is not signed at all")
+            && !diagnostic.contains("in subcomponent:");
+        if !framework_itself_is_unsigned {
+            command.arg("--preserve-metadata=identifier,entitlements,flags,runtime");
+        }
+        let signing = command
+            .arg(&framework)
+            .output()
+            .context("start ad-hoc signing for staged Electron Framework")?;
+        ensure!(
+            signing.status.success(),
+            "ad-hoc signing staged Electron Framework failed: {}",
+            String::from_utf8_lossy(&signing.stderr).trim()
+        );
+
+        let verification = Command::new("/usr/bin/codesign")
+            .args(["--verify", "--deep", "--verbose=2"])
+            .arg(&framework)
+            .output()
+            .context("verify normalized staged Electron Framework signature")?;
+        ensure!(
+            verification.status.success(),
+            "normalized Electron Framework signature verification failed: {}",
+            String::from_utf8_lossy(&verification.stderr).trim()
+        );
+        eprintln!("RUNTIME_FRAMEWORK_SIGNATURE_NORMALIZED");
+    }
+
+    let executable = macos_runtime_framework_executable(&framework)?;
+    Ok(sha256_file(&executable)?)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_macos_framework_links(framework: &Path) -> Result<()> {
+    use std::fs::FileType;
+
+    fn visit(path: &Path, bundle_root: &Path, file_type: FileType) -> Result<()> {
+        if file_type.is_dir() {
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let child = entry.path();
+                let metadata = std::fs::symlink_metadata(&child)?;
+                visit(&child, bundle_root, metadata.file_type())?;
+            }
+        } else if file_type.is_symlink() {
+            let target = std::fs::read_link(path)?;
+            ensure!(
+                !target.is_absolute(),
+                "Electron Framework contains an absolute symbolic link: {}",
+                path.display()
+            );
+            let resolved = path.canonicalize().with_context(|| {
+                format!(
+                    "resolve Electron Framework symbolic link {}",
+                    path.display()
+                )
+            })?;
+            ensure!(
+                resolved.starts_with(bundle_root),
+                "Electron Framework symbolic link escapes its bundle: {}",
+                path.display()
+            );
+        } else if !file_type.is_file() {
+            bail!(
+                "Electron Framework contains an unsupported filesystem entry: {}",
+                path.display()
+            );
+        }
+        Ok(())
+    }
+
+    let bundle_root = framework.canonicalize()?;
+    visit(
+        framework,
+        &bundle_root,
+        std::fs::symlink_metadata(framework)?.file_type(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_runtime_framework_executable(framework: &Path) -> Result<PathBuf> {
+    let executable = framework.join("Versions/A/Electron Framework");
+    let metadata = std::fs::symlink_metadata(&executable).with_context(|| {
+        format!(
+            "inspect Electron Framework executable {}",
+            executable.display()
+        )
+    })?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "Electron Framework executable is not a regular file: {}",
+        executable.display()
+    );
+    Ok(executable)
 }
 
 /// Register every runtime used by the active/previous/pending releases. Repeated
@@ -574,18 +719,9 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
 fn sign_macos_host(bundle: &Path) -> Result<()> {
     use std::process::Command;
 
-    // Official Electron archives can contain an unsigned Electron Framework.
-    // Signing the containing app would then recurse into that shared framework,
-    // which is hard-linked to the runtime cache. Sign only the private branded
-    // executable in that case; helpers are signed and verified individually.
-    let signing_target = if macos_host_framework_is_unsigned(bundle)? {
-        macos_host_main_executable(bundle)?
-    } else {
-        bundle.to_path_buf()
-    };
     let output = Command::new("/usr/bin/codesign")
         .args(["--force", "--sign", "-", "--timestamp=none"])
-        .arg(&signing_target)
+        .arg(bundle)
         .output()
         .context("start ad-hoc code signing for branded runtime host")?;
     ensure!(
@@ -605,14 +741,9 @@ fn verify_macos_host_signature(bundle: &Path) -> Result<()> {
     // symlink destinations as a non-self-contained bundle. Keep normal signature
     // verification here; the distributed installed app remains builder-signed
     // and is verified under its normal strict signing policy.
-    let verification_target = if macos_host_framework_is_unsigned(bundle)? {
-        macos_host_main_executable(bundle)?
-    } else {
-        bundle.to_path_buf()
-    };
     let output = Command::new("/usr/bin/codesign")
         .arg("--verify")
-        .arg(&verification_target)
+        .arg(bundle)
         .output()
         .context("start branded runtime host signature verification")?;
     ensure!(
@@ -621,67 +752,6 @@ fn verify_macos_host_signature(bundle: &Path) -> Result<()> {
         String::from_utf8_lossy(&output.stderr).trim()
     );
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn macos_host_framework_is_unsigned(bundle: &Path) -> Result<bool> {
-    use std::process::Command;
-
-    let framework = bundle.join("Contents/Frameworks/Electron Framework.framework");
-    let metadata = match std::fs::symlink_metadata(&framework) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error).context("inspect Electron Framework signature target"),
-    };
-    ensure!(
-        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
-        "branded Electron Framework must be a host-local directory"
-    );
-    // Some official Electron frameworks carry an embedded Mach-O signature but
-    // omit the resource envelope that `codesign --verify` expects when the
-    // framework is checked in isolation. We only need to know whether signing
-    // the containing host would recurse into a signed framework; verify the
-    // signature presence here, and leave integrity verification to the final
-    // host/helper verification and the runtime archive hash.
-    let output = Command::new("/usr/bin/codesign")
-        .arg("--display")
-        .arg("--verbose=2")
-        .arg(&framework)
-        .output()
-        .context("inspect shared Electron Framework signature")?;
-    if output.status.success() {
-        return Ok(false);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr
-        .to_ascii_lowercase()
-        .contains("code object is not signed at all")
-    {
-        return Ok(true);
-    }
-    bail!(
-        "inspect shared Electron Framework signature failed: {}",
-        stderr.trim()
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn macos_host_main_executable(bundle: &Path) -> Result<PathBuf> {
-    let info_plist = std::fs::read_to_string(bundle.join("Contents/Info.plist"))
-        .context("read branded runtime host Info.plist")?;
-    let executable = plist_string_value(&info_plist, "CFBundleExecutable")
-        .context("branded runtime host has no CFBundleExecutable")?;
-    ensure!(
-        !executable.contains('/') && !executable.contains('\\'),
-        "invalid CFBundleExecutable in branded runtime host"
-    );
-    let executable = bundle.join("Contents/MacOS").join(executable);
-    ensure!(
-        std::fs::symlink_metadata(&executable).is_ok_and(|metadata| metadata.file_type().is_file()),
-        "branded runtime host executable is missing: {}",
-        executable.display()
-    );
-    Ok(executable)
 }
 
 #[cfg(target_os = "macos")]
@@ -1503,6 +1573,24 @@ fn locate_at(root: &Path, key: &RuntimeKey) -> Result<Runtime> {
         "runtime default_app.asar hash mismatch"
     );
 
+    #[cfg(target_os = "macos")]
+    if key.platform.starts_with("darwin-") {
+        let expected_framework_hash = marker
+            .macos_framework_executable_sha256
+            .as_deref()
+            .context("macOS runtime marker predates Framework signature normalization")?;
+        ensure!(
+            is_sha256(expected_framework_hash),
+            "invalid macOS Framework executable marker hash"
+        );
+        let framework = dir.join("Electron.app/Contents/Frameworks/Electron Framework.framework");
+        ensure!(
+            sha256_file(&macos_runtime_framework_executable(&framework)?)?
+                == expected_framework_hash,
+            "runtime Electron Framework executable hash mismatch"
+        );
+    }
+
     Ok(Runtime {
         version: key.version.clone(),
         electron_bin,
@@ -1977,6 +2065,19 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, format!("runtime fixture {index}")).unwrap();
         }
+        #[cfg(target_os = "macos")]
+        let macos_framework_executable_sha256 = if key.platform.starts_with("darwin-") {
+            let framework =
+                dir.join("Electron.app/Contents/Frameworks/Electron Framework.framework");
+            let executable = framework.join("Versions/A/Electron Framework");
+            std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            std::fs::write(&executable, b"framework fixture").unwrap();
+            Some(sha256_file(&executable).unwrap())
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let macos_framework_executable_sha256 = None;
         let electron_bin = electron_bin_path(&dir, &key.platform).unwrap();
         let default_app_asar = default_app_asar_path(&dir, &key.platform);
         let marker = InstallMarker {
@@ -1988,6 +2089,7 @@ mod tests {
             default_app_asar_size: std::fs::metadata(&default_app_asar).unwrap().len(),
             electron_bin_sha256: sha256_file(&electron_bin).unwrap(),
             default_app_asar_sha256: sha256_file(&default_app_asar).unwrap(),
+            macos_framework_executable_sha256,
         };
         std::fs::write(
             dir.join(INSTALL_MARKER),
@@ -2018,6 +2120,28 @@ mod tests {
         ))
         .unwrap();
         assert!(locate_at(&root, &key).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn old_macos_runtime_marker_requires_safe_staged_reinstall() {
+        let root = temp_root("old-macos-marker");
+        let key = test_key();
+        write_valid_runtime(&root, &key);
+        let marker_path = version_dir(&root, &key).join(INSTALL_MARKER);
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
+        marker
+            .as_object_mut()
+            .unwrap()
+            .remove("macos_framework_executable_sha256");
+        std::fs::write(&marker_path, serde_json::to_vec(&marker).unwrap()).unwrap();
+
+        let error = locate_at(&root, &key).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("predates Framework signature normalization"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
