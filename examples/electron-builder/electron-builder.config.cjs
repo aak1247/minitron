@@ -1,14 +1,6 @@
 "use strict";
 
-const { withMinitron } = require("@minitron/electron-builder");
-
-function requiredEnvironmentValue(name) {
-  const value = process.env[name];
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new Error(`${name} must be set before running electron-builder`);
-  }
-  return value;
-}
+const { withMinitron } = require("minitron-builder");
 
 function linuxBuildRequested() {
   return process.argv.some((argument) =>
@@ -63,7 +55,7 @@ const appConfig = {
 };
 
 module.exports = withMinitron(appConfig, {
-  launcherPath: requiredEnvironmentValue("MINITRON_LAUNCHER"),
-  manifestUrl: requiredEnvironmentValue("MINITRON_MANIFEST_URL"),
+  ...(process.env.MINITRON_LAUNCHER ? { launcherPath: process.env.MINITRON_LAUNCHER } : {}),
+  ...(process.env.MINITRON_MANIFEST_URL ? { manifestUrl: process.env.MINITRON_MANIFEST_URL } : {}),
   iconPath: "build/minitron-icon.png",
 });

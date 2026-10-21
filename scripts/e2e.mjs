@@ -192,6 +192,28 @@ try {
     assert.equal(requests.length, before);
     report.offlineStartupMilliseconds = Date.now() - started;
   });
+  await check('pinned runtime launches without an update server and reuses its offline cache', async () => {
+    const standalone = await install('standalone-no-manifest', report.baseline);
+    const standaloneCache = path.join(work, 'standalone-cache');
+    const env = { ELECTRON_RUNTIME_ROOT: standaloneCache };
+    const artifact = manifest.runtime.platforms[runtimePlatform];
+    assert(artifact, 'the fixture must contain an exact runtime artifact');
+    await fs.writeFile(path.join(standalone.directory, configName), `app_id = "com.example.standalone"\nrequired_runtime = ${JSON.stringify(options['runtime-version'])}\napp_version = "1.0.0"\nallow_localhost_http = true\n[runtime_download]\nurl = ${JSON.stringify(artifact.url)}\nsha256 = ${JSON.stringify(artifact.sha256)}\nsize = ${artifact.size}\n`);
+    const before = requests.length;
+    const first = smoke(await run(standalone.executable, [], env));
+    assert.equal(first.electron, options['runtime-version']);
+    assert.equal(first.appVersion, '1.0.0');
+    const fetched = requests.slice(before);
+    assert(fetched.some(url => url.startsWith(`/electron-v${options['runtime-version']}-`)));
+    assert(!fetched.some(url => url.endsWith('manifest.json')), 'standalone launch must not request an update manifest');
+    const after = requests.length;
+    const update = await run(standalone.executable, ['--check-update'], env);
+    assert.match(update.stdout, /UPDATE_NOT_CONFIGURED/);
+    smoke(await run(standalone.executable, ['--offline'], env));
+    assert.equal(requests.length, after);
+    await run(standalone.executable, ['--uninstall'], env);
+    assert.equal(await exists(runtimePath(standaloneCache, options['runtime-version'])), false);
+  });
   if (process.platform === 'darwin') {
     await check('branded macOS bundle launches its renderer with shared frameworks and private helpers', async () => {
       const bundle = path.join(work, 'myapp.app');

@@ -10,7 +10,9 @@ for (const size of sizes) {
   if (await hashFile(path.join(directory, size.archive)) !== size.sha256) throw new Error(`Archive changed: ${size.archive}`);
 }
 for (const name of ['install.ps1', 'install.sh']) await fs.copyFile(name, path.join(directory, name));
-const adapter = `minitron-electron-builder-${sizes[0].version}.tgz`;
+const adapterPackage = JSON.parse(await fs.readFile(new URL('../packages/electron-builder/package.json', import.meta.url), 'utf8'));
+if (adapterPackage.version !== sizes[0].version) throw new Error('Adapter and launcher versions differ');
+const adapter = `${adapterPackage.name.replace(/^@/, '').replace('/', '-')}-${adapterPackage.version}.tgz`;
 await fs.access(path.join(directory, adapter));
 const files = [...sizes.map(size => size.archive), adapter, 'install.ps1', 'install.sh'];
 await fs.writeFile(path.join(directory, 'SHA256SUMS'), (await Promise.all(files.map(async name => `${await hashFile(path.join(directory, name))}  ${name}`))).join('\n') + '\n');
