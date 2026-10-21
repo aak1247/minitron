@@ -717,13 +717,25 @@ async function collectMacOpenPreflight(installation) {
       return { error: error.message };
     }
   };
-  const [permissions, binary, plistCheck, signature] = await Promise.all([
+  const [permissions, binary, plistCheck, signature, appSignatureVerification, launcherSignature] = await Promise.all([
     inspect('permissions', 'ls', ['-ldeO@', ...paths]),
     launcher ? inspect('binary', 'file', [launcher]) : Promise.resolve(null),
     inspect('plist', 'plutil', ['-lint', plist]),
     inspect('signature', 'codesign', ['-dv', '--verbose=2', installation.appDir]),
+    inspect('app-signature-verification', '/usr/bin/codesign', ['--verify', '--strict', '--verbose=2', installation.appDir]),
+    launcher ? inspect('launcher-signature', '/usr/bin/codesign', ['-dv', launcher]) : Promise.resolve(null),
   ]);
-  return { uid: process.getuid?.() ?? null, executableName, pathAccess, permissions, binary, plistCheck, signature };
+  return {
+    uid: process.getuid?.() ?? null,
+    executableName,
+    pathAccess,
+    permissions,
+    binary,
+    plistCheck,
+    signature,
+    appSignatureVerification,
+    launcherSignature,
+  };
 }
 
 async function waitForDiagnostic(installation, expectedVersion) {
