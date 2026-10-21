@@ -574,9 +574,18 @@ pub fn prepare_macos_host(cfg: &ShellConfig, rt: &Runtime, release: &Release) ->
 fn sign_macos_host(bundle: &Path) -> Result<()> {
     use std::process::Command;
 
+    // Official Electron archives can contain an unsigned Electron Framework.
+    // Signing the containing app would then recurse into that shared framework,
+    // which is hard-linked to the runtime cache. Sign only the private branded
+    // executable in that case; helpers are signed and verified individually.
+    let signing_target = if macos_host_framework_is_unsigned(bundle)? {
+        macos_host_main_executable(bundle)?
+    } else {
+        bundle.to_path_buf()
+    };
     let output = Command::new("/usr/bin/codesign")
         .args(["--force", "--sign", "-", "--timestamp=none"])
-        .arg(bundle)
+        .arg(&signing_target)
         .output()
         .context("start ad-hoc code signing for branded runtime host")?;
     ensure!(
@@ -596,9 +605,14 @@ fn verify_macos_host_signature(bundle: &Path) -> Result<()> {
     // symlink destinations as a non-self-contained bundle. Keep normal signature
     // verification here; the distributed installed app remains builder-signed
     // and is verified under its normal strict signing policy.
+    let verification_target = if macos_host_framework_is_unsigned(bundle)? {
+        macos_host_main_executable(bundle)?
+    } else {
+        bundle.to_path_buf()
+    };
     let output = Command::new("/usr/bin/codesign")
         .arg("--verify")
-        .arg(bundle)
+        .arg(&verification_target)
         .output()
         .context("start branded runtime host signature verification")?;
     ensure!(
@@ -607,6 +621,60 @@ fn verify_macos_host_signature(bundle: &Path) -> Result<()> {
         String::from_utf8_lossy(&output.stderr).trim()
     );
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_host_framework_is_unsigned(bundle: &Path) -> Result<bool> {
+    use std::process::Command;
+
+    let framework = bundle.join("Contents/Frameworks/Electron Framework.framework");
+    let metadata = match std::fs::symlink_metadata(&framework) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("inspect Electron Framework signature target"),
+    };
+    ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "branded Electron Framework must be a host-local directory"
+    );
+    let output = Command::new("/usr/bin/codesign")
+        .arg("--verify")
+        .arg(&framework)
+        .output()
+        .context("inspect shared Electron Framework signature")?;
+    if output.status.success() {
+        return Ok(false);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr
+        .to_ascii_lowercase()
+        .contains("code object is not signed at all")
+    {
+        return Ok(true);
+    }
+    bail!(
+        "shared Electron Framework signature verification failed: {}",
+        stderr.trim()
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_host_main_executable(bundle: &Path) -> Result<PathBuf> {
+    let info_plist = std::fs::read_to_string(bundle.join("Contents/Info.plist"))
+        .context("read branded runtime host Info.plist")?;
+    let executable = plist_string_value(&info_plist, "CFBundleExecutable")
+        .context("branded runtime host has no CFBundleExecutable")?;
+    ensure!(
+        !executable.contains('/') && !executable.contains('\\'),
+        "invalid CFBundleExecutable in branded runtime host"
+    );
+    let executable = bundle.join("Contents/MacOS").join(executable);
+    ensure!(
+        std::fs::symlink_metadata(&executable).is_ok_and(|metadata| metadata.file_type().is_file()),
+        "branded runtime host executable is missing: {}",
+        executable.display()
+    );
+    Ok(executable)
 }
 
 #[cfg(target_os = "macos")]
