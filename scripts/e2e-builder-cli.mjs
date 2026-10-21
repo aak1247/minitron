@@ -103,12 +103,19 @@ async function main() {
 
   await stage('minimal Electron app fixture is prepared', async () => {
     assert(electronDistPath, 'Electron distribution path was not found');
-    await writeFixture(fixture, electronDistPath, repo);
+    await writeFixture(fixture, electronDistPath, repo, platform);
     const appPackage = JSON.parse(await fs.readFile(path.join(fixture, 'package.json'), 'utf8'));
     assert.equal(appPackage.main, 'dist/main/index.js');
     assert.equal(appPackage.build.appId, 'com.minitron.buildercli.e2e');
     assert.equal(appPackage.build.productName, 'MinitronCliFixture');
-    return { appId: appPackage.build.appId, productName: appPackage.build.productName };
+    assert.equal(appPackage.minitron, undefined, 'The fixture must not rely on Minitron-specific icon options');
+    const platformKey = platform === 'win32' ? 'win' : platform === 'darwin' ? 'mac' : 'linux';
+    const iconSource = appPackage.build[platformKey].icon;
+    assert.equal(typeof iconSource, 'string', 'The native build section must use its standard electron-builder icon setting');
+    for (const key of ['win', 'linux', 'mac']) {
+      if (key !== platformKey) assert.equal(appPackage.build[key].icon, undefined, `Unexpected ${key} icon would bypass native icon conversion`);
+    }
+    return { appId: appPackage.build.appId, productName: appPackage.build.productName, iconSource };
   });
 
   await stage('repository package is packed and installed as an npm tarball', async () => {
@@ -185,7 +192,9 @@ async function main() {
     assert(asar.extractFile(archivePath, path.join('dist', 'main', 'index.js')).toString('utf8').includes('MINITRON_BUILDER_CLI_FIXTURE'));
     assert(asar.extractFile(archivePath, '__minitron_bootstrap__.cjs').length > 0);
     assert(asar.extractFile(archivePath, '__minitron_bootstrap__.mjs').length > 0);
-    assert.equal(await fs.readFile(path.join(resourcesDir, 'minitron-icon.png')).then(bytes => bytes.subarray(0, 8).toString('hex')), '89504e470d0a1a0a');
+    const iconBytes = await fs.readFile(path.join(resourcesDir, 'minitron-icon.png'));
+    assert.equal(iconBytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert(iconBytes.length > 64, 'Converted Minitron PNG icon should contain image data');
     assert.equal(await fs.readFile(path.join(resourcesDir, 'cli-extra', 'sentinel.txt'), 'utf8'), 'extraResources preserved\n');
     assert.equal(await fs.readFile(path.join(resourcesDir, 'app.asar.unpacked', 'dist', 'native', 'unpacked.txt'), 'utf8'), 'asarUnpack preserved\n');
 
@@ -216,6 +225,8 @@ async function main() {
       archiveBytes: (await fs.stat(archivePath)).size,
       appBytes,
       executableName,
+      iconBytes: iconBytes.length,
+      iconSource: (await readFixturePackage(fixture)).build[platform === 'win32' ? 'win' : platform === 'darwin' ? 'mac' : 'linux'].icon,
       electronBuilderOutput: tail(result.stdout, 5000),
     };
     report.packagedApp = { appId: appManifest.metadata.minitron.appId, main: appManifest.main, originalMain: appManifest.minitronOriginalMain };
@@ -232,6 +243,67 @@ async function main() {
     assert.match(updateResult.stdout, /UPDATE_NOT_CONFIGURED/, `Expected the no-manifest status, received: ${updateResult.stdout}`);
     assert.match(updateResult.stdout, /manifest_url is not configured/);
     return { launcherVersion: expectedVersion, updateState: updateResult.stdout.trim() };
+  });
+
+  await stage('CLI builds without project icon settings and supplies its default PNG icon', async () => {
+    const packagePath = path.join(fixture, 'package.json');
+    const appPackage = JSON.parse(await fs.readFile(packagePath, 'utf8'));
+    delete appPackage.minitron;
+    for (const platformName of ['win', 'linux', 'mac']) delete appPackage.build[platformName].icon;
+    appPackage.build.directories.output = 'cli-output-default-icon';
+    assert.equal(appPackage.minitron, undefined);
+    assert(['win', 'linux', 'mac'].every((name) => appPackage.build[name].icon === undefined));
+    for (const filename of ['app.png', 'app.ico', 'app.icns']) {
+      await fs.rm(path.join(fixture, 'build', filename), { force: true });
+    }
+    await fs.writeFile(packagePath, `${JSON.stringify(appPackage, null, 2)}\n`);
+
+    const cliArgs = [platform === 'win32' ? '--win' : platform === 'darwin' ? '--mac' : '--linux', '--dir'];
+    cliArgs.push(architecture === 'arm64' ? '--arm64' : '--x64');
+    const result = await runProcess(process.execPath, [await resolveCliBin(fixture), ...cliArgs], {
+      cwd: fixture,
+      env: childEnvironment,
+      timeoutMs: 900_000,
+    });
+    const outputDirectory = path.join(fixture, 'cli-output-default-icon');
+    const archives = await findFiles(outputDirectory, (file) => path.basename(file) === 'app.asar');
+    assert.equal(archives.length, 1, `Expected one default-icon app.asar, found ${archives.length}`);
+
+    const archivePath = archives[0];
+    const resourcesDir = path.dirname(archivePath);
+    const isMacBundle = platform === 'darwin' && path.basename(resourcesDir) === 'Resources';
+    const appOutDir = isMacBundle ? path.resolve(resourcesDir, '..', '..') : path.dirname(resourcesDir);
+    const iconPath = path.join(resourcesDir, 'minitron-icon.png');
+    const iconBytes = await fs.readFile(iconPath);
+    assert.equal(iconBytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert(iconBytes.length > 64, 'Default Minitron PNG icon should contain image data');
+
+    const requireFromFixture = createRequire(path.join(fixture, 'package.json'));
+    const asar = requireFromFixture('@electron/asar');
+    const packagedManifest = JSON.parse(asar.extractFile(archivePath, 'package.json').toString('utf8'));
+    assert.equal(packagedManifest.metadata?.minitron?.appId, 'com.minitron.buildercli.e2e');
+    const executableName = packagedManifest.metadata?.minitron?.executableName;
+    assert.equal(typeof executableName, 'string');
+    const launcher = platform === 'darwin'
+      ? path.join(appOutDir, 'Contents', 'MacOS', executableName)
+      : path.join(appOutDir, executableName);
+    assert((await fs.stat(launcher)).isFile(), `Default-icon build launcher is missing: ${launcher}`);
+    const versionResult = await runProcess(launcher, ['--version'], { cwd: appOutDir, env: childEnvironment, timeoutMs: 10_000 });
+    assert(`${versionResult.stdout}\n${versionResult.stderr}`.includes(report.launcher.version));
+    const updateResult = await runProcess(launcher, ['--check-update'], { cwd: appOutDir, env: childEnvironment, timeoutMs: 20_000 });
+    assert.match(updateResult.stdout, /UPDATE_NOT_CONFIGURED/);
+
+    report.defaultIconBuild = {
+      command: ['npx', 'minitron-builder', ...cliArgs],
+      outputDirectory: 'cli-output-default-icon',
+      appOutDir: path.relative(fixture, appOutDir),
+      iconBytes: iconBytes.length,
+      iconSha256: createHash('sha256').update(iconBytes).digest('hex'),
+      executableName,
+      electronBuilderOutput: tail(result.stdout, 3000),
+      updateState: updateResult.stdout.trim(),
+    };
+    return { iconBytes: iconBytes.length, executableName, updateState: updateResult.stdout.trim() };
   });
 }
 
@@ -258,12 +330,28 @@ try {
 
 if (report.status !== 'passed') process.exitCode = 1;
 
-async function writeFixture(directory, electronDist, projectRoot) {
+async function writeFixture(directory, electronDist, projectRoot, targetPlatform) {
   await fs.mkdir(path.join(directory, 'scripts'), { recursive: true });
   await fs.mkdir(path.join(directory, 'fixture-assets'), { recursive: true });
   await fs.mkdir(path.join(directory, 'build'), { recursive: true });
   await fs.writeFile(path.join(directory, 'fixture-assets', 'sentinel.txt'), 'extraResources preserved\n');
-  await fs.writeFile(path.join(directory, 'build', 'minitron-icon.png'), await fs.readFile(path.join(projectRoot, 'app', 'renderer', 'icon.png')));
+  const templateIconPath = path.join(packageDir, 'node_modules', 'app-builder-lib', 'templates', 'icons', 'electron-linux', '256x256.png');
+  const pngIcon = await fs.readFile(templateIconPath);
+  assert.equal(pngIcon.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(pngIcon.readUInt32BE(16), 256);
+  assert.equal(pngIcon.readUInt32BE(20), 256);
+  const buildIcons = { win: {}, mac: {}, linux: { executableName: 'minitron-cli-fixture' } };
+  if (targetPlatform === 'win32') {
+    await fs.writeFile(path.join(directory, 'build', 'app.ico'), createIcoFromPng(pngIcon));
+    buildIcons.win.icon = 'build/app.ico';
+  } else if (targetPlatform === 'darwin') {
+    const source = path.join(electronDist, 'Electron.app', 'Contents', 'Resources', 'electron.icns');
+    await fs.copyFile(source, path.join(directory, 'build', 'app.icns'));
+    buildIcons.mac.icon = 'build/app.icns';
+  } else {
+    await fs.writeFile(path.join(directory, 'build', 'app.png'), pngIcon);
+    buildIcons.linux.icon = 'build/app.png';
+  }
   await fs.writeFile(path.join(directory, 'package.json'), `${JSON.stringify({
     name: 'minitron-builder-cli-fixture',
     version: '1.0.0',
@@ -271,7 +359,6 @@ async function writeFixture(directory, electronDist, projectRoot) {
     main: 'dist/main/index.js',
     scripts: { build: 'node scripts/build.mjs' },
     devDependencies: { electron: '32.2.0' },
-    minitron: { iconPath: 'build/minitron-icon.png' },
     build: {
       appId: 'com.minitron.buildercli.e2e',
       productName: 'MinitronCliFixture',
@@ -279,10 +366,12 @@ async function writeFixture(directory, electronDist, projectRoot) {
       electronVersion: '32.2.0',
       electronDist,
       directories: { output: 'cli-output' },
+      win: buildIcons.win,
+      mac: buildIcons.mac,
+      linux: buildIcons.linux,
       files: ['dist/**/*', 'package.json'],
       extraResources: [{ from: 'fixture-assets', to: 'cli-extra' }],
       asarUnpack: ['dist/native/**'],
-      linux: { executableName: 'minitron-cli-fixture' },
     },
   }, null, 2)}\n`);
   await fs.writeFile(path.join(directory, 'scripts', 'build.mjs'), [
@@ -295,6 +384,23 @@ async function writeFixture(directory, electronDist, projectRoot) {
     "await fs.writeFile('dist/renderer/index.html', '<!doctype html><title>Minitron CLI fixture</title>');",
     "await fs.writeFile('dist/native/unpacked.txt', 'asarUnpack preserved\\n');",
   ].join('\n') + '\n');
+}
+
+function createIcoFromPng(png) {
+  const header = Buffer.alloc(22);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(1, 4);
+  header.writeUInt8(0, 6); // 256 pixels wide
+  header.writeUInt8(0, 7); // 256 pixels tall
+  header.writeUInt16LE(1, 10);
+  header.writeUInt16LE(32, 12);
+  header.writeUInt32LE(png.length, 14);
+  header.writeUInt32LE(header.length, 18);
+  return Buffer.concat([header, png]);
+}
+
+async function readFixturePackage(directory) {
+  return JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
 }
 
 async function extractZip(zipPath, destination, env) {
