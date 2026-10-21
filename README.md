@@ -52,7 +52,7 @@ sh /tmp/minitron-install.sh --dir ./minitron-bin
 
 The scripts select the native binary and check its SHA-256 checksum. Use `-Version v0.2.0` on Windows or `--version v0.2.0` on Linux/macOS to select a release. Existing app configuration and resources are preserved.
 
-Linux requires a desktop environment with glibc 2.35+, fontconfig, X11 or Wayland, and xkbcommon. On Ubuntu 22.04+, install the launcher dependencies with `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6`. Electron also needs GTK3, NSS, audio and GBM desktop libraries; on Ubuntu 22.04, install `libgtk-3-0 libnss3 libasound2 libgbm1`.
+Linux requires a desktop environment with glibc 2.35+, fontconfig, X11 or Wayland, and xkbcommon. On Ubuntu 22.04+, install the launcher dependencies with `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6`. Electron also needs GTK3, notifications, NSS, audio and GBM desktop libraries; on Ubuntu 22.04, install `libgtk-3-0 libnotify4 libnss3 libasound2 libgbm1`.
 
 ## Package an app
 

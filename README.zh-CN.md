@@ -52,7 +52,7 @@ sh /tmp/minitron-install.sh --dir ./minitron-bin
 
 脚本自动选择当前平台的二进制并校验 SHA-256。Windows 可用 `-Version v0.2.0`、Linux/macOS 可用 `--version v0.2.0` 指定版本。已有应用配置和资源会保留。
 
-Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖，Electron 还需要 GTK3、NSS、音频和 GBM 等桌面库；在 Ubuntu 22.04 上可安装 `libgtk-3-0 libnss3 libasound2 libgbm1`。
+Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖，Electron 还需要 GTK3、通知、NSS、音频和 GBM 等桌面库；在 Ubuntu 22.04 上可安装 `libgtk-3-0 libnotify4 libnss3 libasound2 libgbm1`。
 
 ## 打包应用
 
