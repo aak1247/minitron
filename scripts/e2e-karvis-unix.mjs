@@ -180,13 +180,13 @@ try {
     version: '2.0.0', projectDir, sourcePackage, sourceBuild, pngIcon, electronDist,
     manifestUrl: `${manifestBaseUrl}/target/manifest.json`, manifestPublicKey: manifestKeys.publicKey,
     runtimeRoot, targetAppId, executableName, packageName, installedMacParent,
-    targetDiagnostic, targetUserData, work,
+    work,
   });
   const version201 = await buildVersion({
     version: '2.0.1', projectDir, sourcePackage, sourceBuild, pngIcon, electronDist,
     manifestUrl: `${manifestBaseUrl}/target/manifest.json`, manifestPublicKey: manifestKeys.publicKey,
     runtimeRoot, targetAppId, executableName, packageName, installedMacParent,
-    targetDiagnostic, targetUserData, work,
+    work,
   });
   report.artifacts['2.0.0'] = summarizeBuild(version200);
   report.artifacts['2.0.1'] = summarizeBuild(version201);
@@ -199,7 +199,6 @@ try {
       assert(await exists(path.join(peerAppDir, 'resources', 'assets')), 'Peer fixture omitted Karvis extraResources/assets');
     } else {
       await runCommand('ditto', [version200.appDir, peerAppDir], { timeout: 3 * 60_000, label: 'copy-mac-peer-app' });
-      await patchMacLaunchEnvironment(peerAppDir, runtimeRoot, peerDiagnostic, peerUserData);
       assert(await exists(path.join(peerAppDir, 'Contents', 'Resources', 'assets')), 'Peer fixture omitted Karvis extraResources/assets');
     }
     report.peerAppDir = peerAppDir;
@@ -392,13 +391,12 @@ async function buildVersion(settings) {
     await writeHook(path.join(pkgScripts, 'preinstall'), path.join(markersDir, 'pkg-preinstall.log'), `${version} user preinstall`);
     await writeHook(path.join(pkgScripts, 'postinstall'), path.join(markersDir, 'pkg-postinstall.log'), `${version} user postinstall`);
   }
-  const targetUserDataPath = settings.targetUserData;
-  const macEnv = {
-    ...(isRecord(settings.sourceBuild.mac?.extendInfo?.LSEnvironment) ? settings.sourceBuild.mac.extendInfo.LSEnvironment : {}),
-    ELECTRON_RUNTIME_ROOT: settings.runtimeRoot,
-    KARVIS_E2E_DIAGNOSTIC_FILE: settings.targetDiagnostic,
-    KARVIS_E2E_USER_DATA: targetUserDataPath,
-  };
+  const configuredMacEnv = isRecord(settings.sourceBuild.mac?.extendInfo?.LSEnvironment)
+    ? { ...settings.sourceBuild.mac.extendInfo.LSEnvironment }
+    : {};
+  delete configuredMacEnv.KARVIS_E2E_DIAGNOSTIC_FILE;
+  delete configuredMacEnv.KARVIS_E2E_USER_DATA;
+  const macEnv = { ...configuredMacEnv, ELECTRON_RUNTIME_ROOT: settings.runtimeRoot };
   const macBase = isRecord(settings.sourceBuild.mac) ? settings.sourceBuild.mac : {};
   const macConfigBase = { ...macBase };
   delete macConfigBase.identity;
@@ -1034,7 +1032,7 @@ async function verifyLinuxPackageVersion(format, expected) {
     const result = await runCommand('dpkg-query', ['-W', '-f=${Version}', packageName], { label: 'query-deb-version' });
     assert.equal(result.stdout.trim(), expected);
   } else {
-    const result = await runCommand('rpm', ['-q', '--qf', '%{VERSION}', packageName], { label: 'query-rpm-version' });
+    const result = await runCommand('sudo', ['-n', 'rpm', '-q', '--qf', '%{VERSION}', packageName], { label: 'query-rpm-version-root' });
     assert.equal(result.stdout.trim(), expected);
   }
 }
@@ -1065,20 +1063,6 @@ async function forgetTestPkgReceipts() {
   for (const receipt of receipts) await runCommand('sudo', ['-n', 'pkgutil', '--forget', receipt], { timeout: 30_000, label: 'forget-test-pkg-receipt' });
 }
 
-async function patchMacLaunchEnvironment(appDir, root, diagnostic, userData) {
-  const plist = path.join(appDir, 'Contents', 'Info.plist');
-  const values = { ELECTRON_RUNTIME_ROOT: root, KARVIS_E2E_DIAGNOSTIC_FILE: diagnostic, KARVIS_E2E_USER_DATA: userData };
-  await runCommand('/usr/libexec/PlistBuddy', ['-c', 'Add :LSEnvironment dict', plist], { timeout: 15_000, label: 'plist-add-environment' }).catch(() => {});
-  for (const [key, value] of Object.entries(values)) {
-    const escaped = value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-    const command = `Set :LSEnvironment:${key} "${escaped}"`;
-    await runCommand('/usr/libexec/PlistBuddy', ['-c', command, plist], { timeout: 15_000, label: `plist-env-set-${key}` }).catch(async () => {
-      const add = `Add :LSEnvironment:${key} string "${escaped}"`;
-      await runCommand('/usr/libexec/PlistBuddy', ['-c', add, plist], { timeout: 15_000, label: `plist-env-add-${key}` });
-    });
-  }
-}
-
 async function makeMacAppReadOnly(appDir) {
   const plist = path.join(appDir, 'Contents', 'Info.plist');
   const executable = await plistValue(plist, 'CFBundleExecutable');
@@ -1096,11 +1080,14 @@ async function plistValue(plist, key) {
 }
 
 function appEnvironment(installation) {
-  return {
+  const environment = {
     ELECTRON_RUNTIME_ROOT: runtimeRoot,
-    KARVIS_E2E_DIAGNOSTIC_FILE: installation.diagnostic,
-    KARVIS_E2E_USER_DATA: installation.userData,
   };
+  if (process.platform === 'linux') {
+    environment.KARVIS_E2E_DIAGNOSTIC_FILE = installation.diagnostic;
+    environment.KARVIS_E2E_USER_DATA = installation.userData;
+  }
+  return environment;
 }
 
 function runtimeInstallPath() {
