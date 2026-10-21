@@ -206,7 +206,7 @@ try {
       await fs.writeFile(path.join(contents, 'Info.plist'), '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>myapp</string><key>CFBundleName</key><string>myapp</string><key>CFBundleIdentifier</key><string>com.example.myapp</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1.0.0</string><key>CFBundleShortVersionString</key><string>1.0.0</string></dict></plist>');
       const before = (await fs.readdir(bundle, { recursive: true })).sort();
       const requestsBefore = requests.length;
-      const value = smoke(await run(executable, ['--offline']), false);
+      const value = smoke(await run(executable, ['--offline'], { ELECTRON_ENABLE_LOGGING: '1' }), false);
       assert.equal(value.appVersion, '1.0.0');
       assert.equal(value.electron, options['runtime-version']);
       assert.equal(requests.length, requestsBefore);
