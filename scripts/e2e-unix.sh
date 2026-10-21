@@ -74,13 +74,30 @@ done
 
 if [[ -z "$new_shell_binary" ]]; then
   if [[ -n "$cargo_home" ]]; then
-    (cd "$repo_root/shell" && CARGO_HOME="$cargo_home" ERS_BUILD_VERSION=0.4.1 cargo build --locked)
+    metadata="$(CARGO_HOME="$cargo_home" cargo metadata --no-deps --format-version 1 --manifest-path "$repo_root/shell/Cargo.toml")"
   else
-    (cd "$repo_root/shell" && ERS_BUILD_VERSION=0.4.1 cargo build --locked)
+    metadata="$(cargo metadata --no-deps --format-version 1 --manifest-path "$repo_root/shell/Cargo.toml")"
+  fi
+  new_shell_version="$(printf '%s' "$metadata" | node -e '
+const chunks = [];
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => chunks.push(chunk));
+process.stdin.on("end", () => {
+  const metadata = JSON.parse(chunks.join(""));
+  const pkg = metadata.packages.find(({ name }) => name === "minitron");
+  const match = pkg?.version.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+].*)?$/);
+  if (!match) throw new Error(`Cannot derive the next Minitron patch version from ${pkg?.version ?? "Cargo metadata"}`);
+  console.log(`${match[1]}.${match[2]}.${BigInt(match[3]) + 1n}`);
+});
+')"
+  if [[ -n "$cargo_home" ]]; then
+    (cd "$repo_root/shell" && CARGO_HOME="$cargo_home" ERS_BUILD_VERSION="$new_shell_version" cargo build --locked)
+  else
+    (cd "$repo_root/shell" && ERS_BUILD_VERSION="$new_shell_version" cargo build --locked)
   fi
   tool_dir="$repo_root/dist/test-tools"
   mkdir -p "$tool_dir"
-  new_shell_binary="$tool_dir/minitron-0.4.1"
+  new_shell_binary="$tool_dir/minitron-$new_shell_version"
   install -m 755 "$repo_root/shell/target/debug/minitron" "$new_shell_binary"
 fi
 

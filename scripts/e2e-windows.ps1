@@ -24,15 +24,27 @@ foreach ($file in @($RuntimeZip, $UpgradeRuntimeZip, $ShellBinary)) {
 if (-not $NewShellBinary) {
     $previousVersion = $env:ERS_BUILD_VERSION
     $previousCargoHome = $env:CARGO_HOME
-    $env:ERS_BUILD_VERSION = '0.4.1'
     if ($CargoHome) { $env:CARGO_HOME = $CargoHome }
     Push-Location (Join-Path $repoRoot 'shell')
     try {
+        $metadataJson = & cargo metadata --no-deps --format-version 1
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to read the Minitron Cargo package version' }
+        $fixtureVersionScript = @'
+const metadata = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+const pkg = metadata.packages.find(({ name }) => name === "minitron");
+const match = pkg?.version.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+].*)?$/);
+if (!match) throw new Error(`Cannot derive the next Minitron patch version from ${pkg?.version ?? "Cargo metadata"}`);
+console.log(`${match[1]}.${match[2]}.${BigInt(match[3]) + 1n}`);
+'@
+        $metadataText = $metadataJson -join "`n"
+        $fixtureVersion = ($metadataText | & node -e $fixtureVersionScript).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $fixtureVersion) { throw 'Unable to derive the next Minitron fixture version' }
+        $env:ERS_BUILD_VERSION = $fixtureVersion
         & cargo build --locked
         if ($LASTEXITCODE -ne 0) { throw 'Updated-shell fixture build failed' }
         $toolDir = Join-Path $repoRoot 'dist/test-tools'
         New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
-        $NewShellBinary = Join-Path $toolDir 'minitron-0.4.1.exe'
+        $NewShellBinary = Join-Path $toolDir "minitron-$fixtureVersion.exe"
         Copy-Item -LiteralPath (Join-Path $repoRoot 'shell/target/debug/minitron.exe') -Destination $NewShellBinary -Force
     } finally { Pop-Location; $env:ERS_BUILD_VERSION = $previousVersion; $env:CARGO_HOME = $previousCargoHome }
 }
