@@ -4,6 +4,8 @@
 
 ## 打包应用
 
+需要带应用名称、图标和系统入口的安装包时，使用 [electron-builder 适配器](../packages/electron-builder/README.md)，支持 Windows NSIS、Linux DEB/RPM 和 macOS DMG/PKG。以下脚本用于生成便携应用目录。
+
 应用源码目录需包含 `package.json`、`package-lock.json` 和已构建的入口文件。安装 Node.js 22.12+，获取打包工具：
 
 ```sh

@@ -71,7 +71,7 @@ On macOS, run the app's `Contents/Resources/minitron-uninstall.command` from Ter
 "/Applications/Example Desktop.app/Contents/Resources/minitron-uninstall.command"
 ```
 
-The command stops the app and unregisters its Minitron runtime state. Dragging the app to Trash does not run this command; remove the app from Applications after running it.
+The command stops the app and unregisters its Minitron runtime state. Dragging the app to Trash does not run this command; remove the app from Applications after running it. For a DMG upgrade, quit the running app before replacing it in Applications. Use PKG when an installer should stop the old app automatically.
 
 Minitron app updates replace `app.asar` and `app.asar.unpacked`. `extraResources` are included in the installer but not in the app update archive. Keep updateable content in ASAR or distribute external resource changes separately. `electron-updater` is not automatically connected to the Minitron manifest.
 

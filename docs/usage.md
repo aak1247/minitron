@@ -4,6 +4,8 @@
 
 ## Packaging an app
 
+For branded desktop installers, use the [electron-builder adapter](../packages/electron-builder/README.md): Windows NSIS, Linux DEB/RPM, or macOS DMG/PKG. The scripts below create portable app directories.
+
 The source directory needs `package.json`, `package-lock.json` and its built entry files. Install Node.js 22.12+ and get the packaging tools:
 
 ```sh
