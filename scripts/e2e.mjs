@@ -152,7 +152,10 @@ async function install(name, artifacts, appId = 'com.example.myapp', manifestPat
   if (process.platform !== 'win32') await fs.chmod(executable, 0o755);
   await fs.cp(artifacts.out, path.join(directory, 'resources'), { recursive: true });
   await fs.writeFile(path.join(directory, configName), `app_id = ${JSON.stringify(appId)}\nrequired_runtime = ${JSON.stringify(options['runtime-version'])}\napp_version = "1.0.0"\nmanifest_url = ${JSON.stringify(baseUrl + manifestPath)}\nallow_localhost_http = true\nmanifest_public_key = ${JSON.stringify(publicKeyBase64)}\n`);
-  return { directory, executable, pending: path.join(directory, 'updates/pending.json'), active: path.join(directory, 'updates/active.json') };
+  const updates = process.platform === 'win32' ? path.join(directory, 'updates')
+    : (await run(executable, ['--state-dir'])).stdout.trim();
+  assert(path.isAbsolute(updates), 'launcher must report an absolute state directory');
+  return { directory, executable, updates, pending: path.join(updates, 'pending.json'), active: path.join(updates, 'active.json') };
 }
 const runtimePath = (root, version) => path.join(root, 'versions', runtimePlatform, `v${version}`);
 const requestCount = version => requests.filter(url => url.startsWith(`/electron-v${version}-`)).length;
@@ -318,7 +321,7 @@ try {
     const interrupted = await install('app-recovery', report.baseline);
     await run(interrupted.executable, ['--check-update']);
     assert.equal(smoke(await run(interrupted.executable, ['--offline'])).appVersion, '2.0.0');
-    const transactionPath = path.join(interrupted.directory, 'updates/transaction.json');
+    const transactionPath = path.join(interrupted.updates, 'transaction.json');
     const tx = JSON.parse(await fs.readFile(transactionPath, 'utf8'));
     tx.phase = 'awaiting_health'; tx.attempt_pid = 2147483647; tx.attempt_start_time = null; tx.exit_code = null;
     await fs.rm(tx.ready_file, { force: true });
@@ -342,7 +345,7 @@ try {
     await waitFor(async () => { try { return await hashFile(appB.executable) === expectedHash; } catch { return false; } }, 'copier did not install the new launcher', 60_000);
     assert.equal((await run(appB.executable, ['--version'])).stdout.trim(), expectedVersion);
     await waitFor(async () => {
-      const files = await fs.readdir(path.join(appB.directory, 'updates/staging'));
+      const files = await fs.readdir(path.join(appB.updates, 'staging'));
       return !files.some(file => file.endsWith('.ticket.json'));
     }, 'copier did not finish restart handoff');
     await waitFor(() => exists(restartedSmoke), 'updated launcher did not restart a healthy application', 90_000);

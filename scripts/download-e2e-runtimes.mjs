@@ -7,7 +7,9 @@ import { hashFile } from './publish-release.mjs';
 
 const destination = path.resolve(process.argv[2] || 'dist/electron-zips');
 await fs.mkdir(destination, { recursive: true });
-for (const version of ['32.2.0', '33.3.1']) {
+const versions = process.argv[3]?.split(',') || ['32.2.0', '33.3.1'];
+for (const version of versions) {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Invalid Electron version: ${version}`);
   const base = `https://github.com/electron/electron/releases/download/v${version}`;
   const name = `electron-v${version}-${process.platform}-${process.arch}.zip`;
   const checksumResponse = await fetch(`${base}/SHASUMS256.txt`);
