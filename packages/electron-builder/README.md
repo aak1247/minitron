@@ -77,7 +77,7 @@ The command stops the app and unregisters its Minitron runtime state. Dragging t
 
 Minitron app updates replace `app.asar` and `app.asar.unpacked`. `extraResources` are included in the installer but not in the app update archive. Keep updateable content in ASAR or distribute external resource changes separately. `electron-updater` is not automatically connected to the Minitron manifest.
 
-In a packaged app, `process.execPath` identifies the shared Electron runtime. Use `process.env.MINITRON_LAUNCHER` when your app needs to relaunch itself through Minitron.
+In a packaged app, `process.execPath` identifies the running Electron executable. Use `process.env.MINITRON_LAUNCHER` when your app needs to relaunch itself through Minitron.
 
 ## 简体中文
 
