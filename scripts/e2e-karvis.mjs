@@ -1383,6 +1383,7 @@ async function protectInstallation(installation) {
     'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1")',
     '$directory = $env:KARVIS_E2E_INSTALL_DIRECTORY',
     '$acl = Get-Acl -LiteralPath $directory',
+    'if ($acl.AreAccessRulesProtected -or @($acl.Access | Where-Object { -not $_.IsInherited }).Count -gt 0) { throw "Only a fresh test directory with inherited permissions can be protected" }',
     '[IO.File]::WriteAllText($env:KARVIS_E2E_ACL_BACKUP, $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access))',
     '$protected = New-Object Security.AccessControl.DirectorySecurity',
     '$protected.SetAccessRuleProtection($true, $false)',
@@ -1413,9 +1414,8 @@ async function restoreInstallation(installation) {
   await fs.writeFile(script, [
     '$ErrorActionPreference = "Stop"',
     'Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1")',
-    '$acl = Get-Acl -LiteralPath $env:KARVIS_E2E_INSTALL_DIRECTORY',
-    '$acl.SetSecurityDescriptorSddlForm([IO.File]::ReadAllText($env:KARVIS_E2E_ACL_BACKUP), [Security.AccessControl.AccessControlSections]::Access)',
-    'Set-Acl -LiteralPath $env:KARVIS_E2E_INSTALL_DIRECTORY -AclObject $acl',
+    '& icacls.exe $env:KARVIS_E2E_INSTALL_DIRECTORY /reset /q',
+    'if ($LASTEXITCODE -ne 0) { throw "Unable to restore inherited test-directory permissions" }',
   ].join('\r\n'));
   await runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', script], {
     env: { ...process.env, KARVIS_E2E_INSTALL_DIRECTORY: installation.directory, KARVIS_E2E_ACL_BACKUP: installation.aclBackup },
