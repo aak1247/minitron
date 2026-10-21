@@ -213,7 +213,7 @@ try {
 
 } catch (error) {
   failure = error;
-  report.failure = { message: error.message, stack: error.stack };
+  report.failure = { message: error.message, stack: error.stack, ...(error.launchEvidence ? { launchEvidence: error.launchEvidence } : {}) };
 } finally {
   if (sourceSnapshot) {
     try {
@@ -456,10 +456,15 @@ async function buildVersion(settings) {
 async function runCommand(executable, args, settings = {}) {
   const label = settings.label || path.basename(executable);
   const logPath = path.join(logsDir, `${String(commands.length + 1).padStart(3, '0')}-${safeName(label)}.log`);
-  const record = { label, executable, args, cwd: settings.cwd || work, started: new Date().toISOString(), logPath };
+  const record = {
+    label, executable, args, cwd: settings.cwd || work, started: new Date().toISOString(), logPath,
+    ...(settings.stdoutPath ? { stdoutPath: settings.stdoutPath } : {}),
+    ...(settings.stderrPath ? { stderrPath: settings.stderrPath } : {}),
+  };
   commands.push(record);
   await fs.mkdir(path.dirname(logPath), { recursive: true });
   const log = fsSync.createWriteStream(logPath, { flags: 'w' });
+  const outputHandles = [];
   let tail = '';
   let stdout = '';
   let stderr = '';
@@ -467,11 +472,23 @@ async function runCommand(executable, args, settings = {}) {
   const env = { ...process.env, ...(settings.env || {}) };
   delete env.ELECTRON_RUN_AS_NODE;
   const captureOutput = settings.captureOutput !== false;
+  const fileOutput = Boolean(settings.stdoutPath || settings.stderrPath);
+  if (fileOutput) {
+    for (const filename of [settings.stdoutPath, settings.stderrPath]) {
+      if (!filename) { outputHandles.push(null); continue; }
+      await fs.mkdir(path.dirname(filename), { recursive: true });
+      outputHandles.push(await fs.open(filename, 'w'));
+    }
+  }
   const child = spawn(executable, args, {
     cwd: settings.cwd || work,
     env,
     detached: process.platform !== 'win32',
-    stdio: captureOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore',
+    stdio: captureOutput
+      ? ['ignore', 'pipe', 'pipe']
+      : fileOutput
+        ? ['ignore', outputHandles[0]?.fd ?? 'ignore', outputHandles[1]?.fd ?? 'ignore']
+        : 'ignore',
   });
   ownedProcesses.add(child);
   const append = (stream, chunk) => {
@@ -499,13 +516,17 @@ async function runCommand(executable, args, settings = {}) {
   } finally {
     clearTimeout(timer);
     await new Promise(resolve => log.end(resolve));
+    await Promise.all(outputHandles.filter(Boolean).map(handle => handle.close().catch(() => {})));
     ownedProcesses.delete(child);
   }
   record.finished = new Date().toISOString();
   record.exitCode = close.code;
   record.signal = close.signal;
   record.timedOut = timedOut;
-  if (timedOut || close.code !== 0) throw new Error(`${label} failed${timedOut ? ' by timeout' : ` with exit code ${close.code}`}\n${tail}`);
+  if (timedOut || close.code !== 0) {
+    const fileTails = await Promise.all([settings.stdoutPath, settings.stderrPath].filter(Boolean).map(async filename => `${filename}:\n${await readTail(filename) || ''}`));
+    throw new Error(`${label} failed${timedOut ? ' by timeout' : ` with exit code ${close.code}`}\n${tail}${fileTails.length ? `\n${fileTails.join('\n')}` : ''}`);
+  }
   return { ...record, stdout, stderr, logPath };
 }
 
@@ -589,7 +610,15 @@ async function launchInstallation(format, installation, systemEntry) {
     const desktop = await findDesktopEntry(executableName);
     assert(await fs.readFile(desktop, 'utf8').then(text => text.includes(productName)), 'Installed desktop entry does not identify Karvis AI');
     installation.desktopEntry = desktop;
-    await runCommand('gio', ['launch', desktop], { env: appEnvironment(installation), timeout: 30_000, label: `gio-launch-${format}`, captureOutput: false });
+    const launchPrefix = `${format}-target-${Date.now()}`;
+    installation.launchLogs = {
+      stdout: path.join(logsDir, `${launchPrefix}.stdout.log`),
+      stderr: path.join(logsDir, `${launchPrefix}.stderr.log`),
+    };
+    await runCommand('gio', ['launch', desktop], {
+      env: appEnvironment(installation), timeout: 30_000, label: `gio-launch-${format}`, captureOutput: false,
+      stdoutPath: installation.launchLogs.stdout, stderrPath: installation.launchLogs.stderr,
+    });
   } else if (process.platform === 'linux') {
     const child = spawn(installation.launcher, [], { cwd: installation.appDir, env: appEnvironment(installation), detached: true, stdio: 'ignore' });
     ownedProcesses.add(child);
@@ -601,23 +630,111 @@ async function launchInstallation(format, installation, systemEntry) {
     if (installation.launchError) throw new Error(`Could not launch the peer fixture: ${installation.launchError}`);
   } else {
     await makeMacAppReadOnly(installation.appDir);
-    await runCommand('open', ['-n', '-a', installation.appDir], { env: appEnvironment(installation), timeout: 30_000, label: `open-${format}`, captureOutput: false });
+    const launchName = installation.diagnostic === peerDiagnostic ? 'peer' : 'target';
+    installation.launchAttempt = (installation.launchAttempt || 0) + 1;
+    const launchPrefix = `${format}-${launchName}-${installation.launchAttempt}`;
+    installation.launchLogs = {
+      stdout: path.join(logsDir, `${launchPrefix}.stdout.log`),
+      stderr: path.join(logsDir, `${launchPrefix}.stderr.log`),
+    };
+    await Promise.all(Object.values(installation.launchLogs).map(filename => fs.rm(filename, { force: true })));
+    await runCommand('open', [
+      '--stdout', installation.launchLogs.stdout,
+      '--stderr', installation.launchLogs.stderr,
+      '-n', '-a', installation.appDir,
+    ], { env: appEnvironment(installation), timeout: 30_000, label: `open-${format}` });
   }
 }
 
 async function waitForDiagnostic(installation, expectedVersion) {
-  await waitFor(async () => {
-    try {
-      const diagnostic = JSON.parse(await fs.readFile(installation.diagnostic, 'utf8'));
-      return diagnostic.pid && diagnostic.renderer && diagnostic.appVersion === expectedVersion;
-    } catch { return false; }
-  }, `Karvis renderer IPC diagnostic was not written for ${installation.appDir}`, 120_000);
+  try {
+    await waitFor(async () => {
+      if (installation.launchLogs?.stderr) {
+        const stderr = await readTail(installation.launchLogs.stderr);
+        const fatal = findFatalStartupError(stderr);
+        if (fatal) throw new Error(`Fatal application startup output for ${installation.appDir}:\n${fatal}`);
+      }
+      try {
+        const diagnostic = JSON.parse(await fs.readFile(installation.diagnostic, 'utf8'));
+        return diagnostic.pid && diagnostic.renderer && diagnostic.appVersion === expectedVersion;
+      } catch { return false; }
+    }, `Karvis renderer IPC diagnostic was not written for ${installation.appDir}`, 120_000);
+  } catch (error) {
+    error.launchEvidence = await collectLaunchFailureEvidence(installation);
+    throw error;
+  }
   const diagnostic = JSON.parse(await fs.readFile(installation.diagnostic, 'utf8'));
   await waitFor(async () => {
     const record = await readProcessRecord(installation);
     return record && Number(record.childPid) === Number(diagnostic.pid) && record.childStartTime != null;
   }, `Minitron process record did not identify the real Karvis Electron main process for ${installation.appDir}`, 30_000);
   return diagnostic;
+}
+
+async function collectLaunchFailureEvidence(installation) {
+  const evidence = { appDir: installation.appDir, launcher: installation.launcher || null };
+  if (installation.launchLogs) {
+    evidence.launchLogs = {
+      stdout: await readTail(installation.launchLogs.stdout),
+      stderr: await readTail(installation.launchLogs.stderr),
+    };
+  }
+  try {
+    const directory = await stateDir(installation);
+    evidence.stateDir = directory;
+    evidence.stateFiles = {};
+    for (const filename of ['process.json', 'active.json', 'installed-base.json', 'pending.json', 'transaction.json']) {
+      try {
+        evidence.stateFiles[filename] = JSON.parse(await fs.readFile(path.join(directory, filename), 'utf8'));
+      } catch (error) {
+        if (error.code !== 'ENOENT') evidence.stateFiles[filename] = { readError: error.message };
+      }
+    }
+    const record = evidence.stateFiles['process.json'];
+    const pids = [...new Set([record?.ownerPid, record?.childPid].map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0))];
+    if (pids.length) {
+      try {
+        const result = await runCommand('ps', ['-p', pids.join(','), '-o', 'pid=,ppid=,stat=,command='], {
+          timeout: 15_000,
+          label: `diagnostic-processes-${safeName(path.basename(installation.appDir))}`,
+        });
+        const installPath = path.resolve(installation.appDir);
+        evidence.processes = result.stdout.split(/\r?\n/).map(line => line.trim()).filter(line => line && line.includes(installPath));
+      } catch (error) {
+        evidence.processesError = error.message;
+      }
+    }
+  } catch (error) {
+    evidence.stateError = error.message;
+  }
+  return evidence;
+}
+
+async function readTail(filename, maxBytes = 24_000) {
+  let handle;
+  try {
+    handle = await fs.open(filename, 'r');
+    const stat = await handle.stat();
+    const length = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, Math.max(0, stat.size - length));
+    return buffer.toString('utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    return `[could not read ${filename}: ${error.message}]`;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function findFatalStartupError(stderr) {
+  if (!stderr) return null;
+  if (stderr.includes('SHELL_ERROR:')) return stderr;
+  const fatalLines = stderr.split(/\r?\n/).filter(line =>
+    /dyld(?:\[[^\]]+\])?:\s*(?:Library not loaded:|Symbol not found:|no suitable image found:)/i.test(line)
+    || /code signature.*(?:invalid|failed)|(?:invalid|failed).*code signature/i.test(line),
+  );
+  return fatalLines.length ? stderr : null;
 }
 
 async function validateDiagnostic(value, installation, expectedVersion) {
@@ -887,6 +1004,7 @@ async function injectDiagnostics(mainPath) {
   const source = await fs.readFile(mainPath, 'utf8');
   const marker = '/* MINITRON_KARVIS_UNIX_E2E */';
   assert(!source.includes(marker), 'Karvis E2E diagnostics were already injected');
+  const canonicalPeerRoot = await fs.realpath(peerRoot);
   const rendererExpression = `(async () => {\n    const until = Date.now() + 10000;\n    while (!(document.getElementById('root')?.childElementCount > 0) && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 50));\n    const api = window.electronAPI || {};\n    const appVersion = typeof api.getAppVersion === 'function' ? await api.getAppVersion() : null;\n    return { ipc: typeof api.getAppVersion === 'function' && appVersion != null, appVersion, title: document.title, bodyText: document.body?.innerText || '', rootChildren: document.getElementById('root')?.childElementCount || 0, htmlLength: document.documentElement?.outerHTML.length || 0 };\n  })()`;
   const prefix = [
     marker,
@@ -894,8 +1012,9 @@ async function injectDiagnostics(mainPath) {
     '  const { app } = require("electron");',
     '  const fs = require("node:fs");',
     '  const path = require("node:path");',
-    `  const peerRoot = path.resolve(${JSON.stringify(peerRoot)});`,
-    '  const isPeer = !!process.env.MINITRON_RESOURCES_DIR && path.resolve(process.env.MINITRON_RESOURCES_DIR).startsWith(peerRoot + path.sep);',
+    `  const peerRoot = ${JSON.stringify(canonicalPeerRoot)};`,
+    '  let resourceDir = null; try { if (process.env.MINITRON_RESOURCES_DIR) resourceDir = fs.realpathSync(process.env.MINITRON_RESOURCES_DIR); } catch (_) {}',
+    '  const isPeer = !!resourceDir && resourceDir.startsWith(peerRoot + path.sep);',
     `  const requestedUserData = process.env.KARVIS_E2E_USER_DATA || (isPeer ? ${JSON.stringify(peerUserData)} : ${JSON.stringify(targetUserData)});`,
     '  if (requestedUserData) { fs.mkdirSync(requestedUserData, { recursive: true }); app.setPath("userData", path.resolve(requestedUserData)); }',
     '  app.on("browser-window-created", (_event, window) => {',
