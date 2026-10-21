@@ -665,12 +665,65 @@ async function launchInstallation(format, installation, systemEntry) {
       stderr: path.join(logsDir, `${launchPrefix}.stderr.log`),
     };
     await Promise.all(Object.values(installation.launchLogs).map(filename => fs.rm(filename, { force: true })));
-    await runCommand('open', [
-      '--stdout', installation.launchLogs.stdout,
-      '--stderr', installation.launchLogs.stderr,
-      '-n', '-a', installation.appDir,
-    ], { env: appEnvironment(installation), timeout: 30_000, label: `open-${format}` });
+    try {
+      await runCommand('open', [
+        '--stdout', installation.launchLogs.stdout,
+        '--stderr', installation.launchLogs.stderr,
+        '-n', '-a', installation.appDir,
+      ], { env: appEnvironment(installation), timeout: 30_000, label: `open-${format}` });
+    } catch (error) {
+      error.launchEvidence = {
+        appDir: installation.appDir,
+        launchLogs: {
+          stdout: await readTail(installation.launchLogs.stdout),
+          stderr: await readTail(installation.launchLogs.stderr),
+        },
+        macOpenPreflight: await collectMacOpenPreflight(installation),
+      };
+      throw error;
+    }
   }
+}
+
+async function collectMacOpenPreflight(installation) {
+  const plist = path.join(installation.appDir, 'Contents', 'Info.plist');
+  const executableName = await plistValue(plist, 'CFBundleExecutable').catch(() => null);
+  const launcher = executableName && path.join(installation.appDir, 'Contents', 'MacOS', executableName);
+  const paths = [
+    installation.appDir,
+    path.join(installation.appDir, 'Contents'),
+    plist,
+    path.join(installation.appDir, 'Contents', 'MacOS'),
+    launcher,
+  ].filter(Boolean);
+  const pathAccess = [];
+  for (const filename of paths) {
+    try {
+      const stat = await fs.stat(filename);
+      const access = {};
+      for (const [name, mode] of [['read', fsSync.constants.R_OK], ['execute', fsSync.constants.X_OK]]) {
+        try { await fs.access(filename, mode); access[name] = true; } catch { access[name] = false; }
+      }
+      pathAccess.push({ path: filename, mode: (stat.mode & 0o777).toString(8), uid: stat.uid, gid: stat.gid, access });
+    } catch (error) {
+      pathAccess.push({ path: filename, error: error.message });
+    }
+  }
+  const inspect = async (label, executable, args) => {
+    try {
+      const result = await runCommand(executable, args, { timeout: 15_000, label: `mac-open-preflight-${label}` });
+      return { stdout: result.stdout, stderr: result.stderr };
+    } catch (error) {
+      return { error: error.message };
+    }
+  };
+  const [permissions, binary, plistCheck, signature] = await Promise.all([
+    inspect('permissions', 'ls', ['-ldeO@', ...paths]),
+    launcher ? inspect('binary', 'file', [launcher]) : Promise.resolve(null),
+    inspect('plist', 'plutil', ['-lint', plist]),
+    inspect('signature', 'codesign', ['-dv', '--verbose=2', installation.appDir]),
+  ]);
+  return { uid: process.getuid?.() ?? null, executableName, pathAccess, permissions, binary, plistCheck, signature };
 }
 
 async function waitForDiagnostic(installation, expectedVersion) {
