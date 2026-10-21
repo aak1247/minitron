@@ -55,7 +55,7 @@ Minitron requires ASAR packaging. `iconPath` is a PNG included in app resources;
 
 Linux DEB/RPM packages need a homepage URL. Set `homepage` in the app's `package.json`, or let electron-builder infer it from the Git origin.
 
-`withMinitron` preserves your existing `afterPack` hook and runs it before Minitron conversion. It retains NSIS options and composes the NSIS lifecycle include. Linux DEB/RPM keeps configured `afterInstall` and `afterRemove` scripts and adds a before-remove hook. PKG builds retain user scripts and add an app-stop step before replacing the installed bundle.
+`withMinitron` preserves your existing `afterPack` hook and runs it before Minitron conversion. It retains NSIS options and composes the NSIS lifecycle include. Linux DEB/RPM keeps configured `afterInstall` and `afterRemove` scripts, stops the old app before upgrades, and unregisters it on final removal. PKG builds retain user scripts and add an app-stop step before replacing the installed bundle.
 
 `launcherPath` and `manifestUrl` are required. Relative paths resolve from `projectDir` or the build working directory. `runtimeVersion` is inferred from electron-builder's resolved Electron runtime; `manifestPublicKey` and `allowLocalhostHttp` are optional. HTTPS is required unless localhost HTTP is explicitly enabled. CommonJS and ESM application entries are supported.
 
