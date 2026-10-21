@@ -191,15 +191,67 @@ test("resolves configured PNGs and converts ICNS through electron-builder's icon
     mac: { icon: "assets/icon.png" },
   });
   pngPackager.resolveIcon = async () => { throw new Error("existing PNG should be used directly"); };
-  assert.equal(await resolveIconPath({ packager: pngPackager }, {}, fixture.projectDir), fixture.iconPath);
+  assert.equal(await resolveIconPath({ packager: pngPackager, electronPlatformName: "darwin" }, {}, fixture.projectDir), fixture.iconPath);
 
   const icnsPackager = makeIconPackager(fixture.projectDir, {
     directories: { output: "icon-output" },
     mac: { icon: "assets/app.icns" },
   });
-  const convertedPath = await resolveIconPath({ packager: icnsPackager }, {}, fixture.projectDir);
+  const convertedPath = await resolveIconPath({ packager: icnsPackager, electronPlatformName: "darwin" }, {}, fixture.projectDir);
   assert.equal(fs.readFileSync(convertedPath).subarray(0, PNG.length).equals(PNG), true);
   assert.match(convertedPath, /\.icon-set/i);
+});
+
+test("prefers the current platform icon and ignores foreign non-PNG icons", async (t) => {
+  const fixture = await makeFixture(t);
+  const iconDirectory = path.join(fixture.projectDir, "assets");
+  fs.mkdirSync(iconDirectory, { recursive: true });
+  const foreignIco = path.join(iconDirectory, "windows.ico");
+  const currentIcns = path.join(iconDirectory, "mac.icns");
+  const globalIcns = path.join(iconDirectory, "global.icns");
+  fs.copyFileSync(require.resolve("app-builder-lib/templates/icons/proton-native/proton-native.ico"), foreignIco);
+  fs.copyFileSync(require.resolve("app-builder-lib/templates/icons/proton-native/proton-native.icns"), currentIcns);
+  fs.copyFileSync(currentIcns, globalIcns);
+
+  const packager = makeIconPackager(fixture.projectDir, {
+    directories: { output: "icon-output" },
+    win: { icon: "assets/windows.ico" },
+    mac: { icon: "assets/mac.icns" },
+    icon: "assets/global.icns",
+  });
+  const calls = [];
+  packager.resolveIcon = async (sources) => {
+    calls.push(sources);
+    return [{ file: fixture.iconPath, size: 512 }];
+  };
+
+  await resolveIconPath({ packager, electronPlatformName: "darwin" }, {}, fixture.projectDir);
+  assert.deepEqual(calls, [[currentIcns]]);
+
+  // Without a mac-specific entry, the global icon still takes precedence over a
+  // foreign Windows ICO, which must never be sent through the ICO converter.
+  delete packager.info.config.mac;
+  calls.length = 0;
+  await resolveIconPath({ packager, electronPlatformName: "darwin" }, {}, fixture.projectDir);
+  assert.deepEqual(calls, [[globalIcns]]);
+});
+
+test("converts the icon discovered by electron-builder when no explicit icon is configured", async (t) => {
+  const fixture = await makeFixture(t);
+  const implicitIcns = path.join(fixture.projectDir, "build", "icon.icns");
+  fs.mkdirSync(path.dirname(implicitIcns), { recursive: true });
+  fs.copyFileSync(require.resolve("app-builder-lib/templates/icons/proton-native/proton-native.icns"), implicitIcns);
+  const packager = makeIconPackager(fixture.projectDir, { directories: { output: "icon-output" } });
+  packager.getIconPath = async () => implicitIcns;
+  const calls = [];
+  packager.resolveIcon = async (sources) => {
+    calls.push(sources);
+    return [{ file: fixture.iconPath, size: 512 }];
+  };
+
+  const result = await resolveIconPath({ packager, electronPlatformName: "darwin" }, {}, fixture.projectDir);
+  assert.equal(result, fixture.iconPath);
+  assert.deepEqual(calls, [[implicitIcns]]);
 });
 
 test("uses the bundled default PNG icon when no application icon is configured", async (t) => {

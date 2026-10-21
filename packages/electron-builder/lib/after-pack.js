@@ -341,13 +341,58 @@ async function resolveIconPath(context, options, projectDir) {
   const packager = context.packager;
   const config = packager.config || (packager.info && packager.info.config) || {};
   const platformOptions = packager.platformSpecificBuildOptions || {};
-  const candidates = [
+  const platformConfigKey = context.electronPlatformName === "win32"
+    ? "win"
+    : context.electronPlatformName === "darwin"
+      ? "mac"
+      : context.electronPlatformName === "linux"
+        ? "linux"
+        : null;
+  const currentCandidates = [
     platformOptions.icon,
-    config.win && config.win.icon,
-    config.linux && config.linux.icon,
+    platformConfigKey && config[platformConfigKey] && config[platformConfigKey].icon,
     config.icon,
-    config.mac && config.mac.icon,
   ];
+  const currentSources = resolveExistingIconSources(currentCandidates, packager, config, projectDir);
+  if (currentSources.length > 0) {
+    return convertIconSource(currentSources[0], packager);
+  }
+
+  // Keep the previous cross-platform PNG behavior, but never try to convert a foreign
+  // platform's ICO/ICNS. It may be a valid config entry for a different target.
+  const foreignCandidates = [config.win && config.win.icon, config.linux && config.linux.icon, config.mac && config.mac.icon];
+  const foreignSources = resolveExistingIconSources(foreignCandidates, packager, config, projectDir);
+  for (const source of foreignSources) {
+    if (isPng(source)) return source;
+  }
+
+  // WinPackager and MacPackager resolve their implicit build-resource icons here
+  // (for example build/icon.ico or build/icon.icns).
+  if ((context.electronPlatformName === "win32" || context.electronPlatformName === "darwin")
+    && typeof packager.getIconPath === "function") {
+    const implicitIcon = await packager.getIconPath();
+    if (typeof implicitIcon === "string" && fs.existsSync(implicitIcon)) {
+      return convertIconSource(implicitIcon, packager);
+    }
+  }
+
+  // Linux's helper discovers icons/icon.png in build resources. Also accept the
+  // conventional build/icon.png path without invoking its broader cross-platform scan.
+  if (context.electronPlatformName === "linux") {
+    const buildResources = packager.buildResourcesDir
+      || (packager.info && packager.info.buildResourcesDir)
+      || path.resolve(projectDir, config.directories && config.directories.buildResources || "build");
+    const linuxPng = path.join(buildResources, "icon.png");
+    if (isPng(linuxPng)) return linuxPng;
+  }
+
+  const defaultIcon = require("app-builder-lib/out/util/pathManager")
+    .getTemplatePath(path.join("icons", "electron-linux", "256x256.png"));
+  assertPng(defaultIcon);
+  return defaultIcon;
+}
+
+function resolveExistingIconSources(candidates, packager, config, projectDir) {
   const sources = [];
   const seen = new Set();
   for (const candidate of candidates) {
@@ -356,26 +401,22 @@ async function resolveIconPath(context, options, projectDir) {
     const normalized = process.platform === "win32" ? resolved.toLowerCase() : resolved;
     if (seen.has(normalized)) continue;
     seen.add(normalized);
-    if (isPng(resolved)) return resolved;
     if (fs.existsSync(resolved)) sources.push(resolved);
   }
+  return sources;
+}
 
-  for (const source of sources) {
-    if (path.extname(source).toLowerCase() === ".ico") {
-      return convertIcoToPng(source);
-    }
-    const resolver = packager.resolveIcon;
-    if (typeof resolver !== "function") {
-      throw new Error("electron-builder's resolved packager does not expose resolveIcon() to convert its configured icon");
-    }
-    const converted = await resolver.call(packager, [source], [], "set");
-    return selectLargestPng(converted, source);
+async function convertIconSource(source, packager) {
+  if (isPng(source)) return source;
+  if (path.extname(source).toLowerCase() === ".ico") {
+    return convertIcoToPng(source);
   }
-
-  const defaultIcon = require("app-builder-lib/out/util/pathManager")
-    .getTemplatePath(path.join("icons", "electron-linux", "256x256.png"));
-  assertPng(defaultIcon);
-  return defaultIcon;
+  const resolver = packager.resolveIcon;
+  if (typeof resolver !== "function") {
+    throw new Error("electron-builder's resolved packager does not expose resolveIcon() to convert its configured icon");
+  }
+  const converted = await resolver.call(packager, [source], [], "set");
+  return selectLargestPng(converted, source);
 }
 
 function resolveConfiguredIconPath(candidate, packager, config, projectDir) {
