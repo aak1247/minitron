@@ -30,6 +30,7 @@
     "lib/",
     "installer.nsh",
     "__minitron_bootstrap__.cjs",
+    "__minitron_bootstrap__.mjs",
     "README.md"
   ],
   "scripts": {

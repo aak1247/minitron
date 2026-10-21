@@ -16,7 +16,9 @@ const {
   validateStableVersion,
 } = require("./validation");
 
-const BOOTSTRAP_ENTRY = "__minitron_bootstrap__.cjs";
+const CJS_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.cjs";
+const ESM_BOOTSTRAP_ENTRY = "__minitron_bootstrap__.mjs";
+const BOOTSTRAP_ENTRIES = [CJS_BOOTSTRAP_ENTRY, ESM_BOOTSTRAP_ENTRY];
 const MINIMUM_LAUNCHER_VERSION = [0, 2, 0];
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -467,12 +469,19 @@ function toNativeAsarPath(value) {
 }
 
 async function patchAsar(archivePath, resourcesDir, metadata) {
-  const bootstrapPath = path.join(__dirname, "..", BOOTSTRAP_ENTRY);
-  assertFile(bootstrapPath, "Minitron bootstrap");
+  const bootstrapPaths = new Map(BOOTSTRAP_ENTRIES.map((entry) => {
+    const bootstrapPath = path.join(__dirname, "..", entry);
+    assertFile(bootstrapPath, `Minitron ${entry} bootstrap`);
+    return [entry, bootstrapPath];
+  }));
   asar.uncache(archivePath);
   const rawHeader = asar.getRawHeader(archivePath).header;
   const originalManifest = readArchiveJson(archivePath, "package.json");
-  const appManifest = prepareManifest(originalManifest, metadata);
+  const alreadyPatched = isPreviouslyPatchedManifest(originalManifest, metadata);
+  if (BOOTSTRAP_ENTRIES.includes(originalManifest.main) && !alreadyPatched) {
+    throw new Error(`The app's original main cannot use the reserved Minitron bootstrap path ${originalManifest.main}`);
+  }
+  const appManifest = prepareManifest(originalManifest, metadata, alreadyPatched);
   const tempRoot = fs.mkdtempSync(path.join(resourcesDir, ".minitron-asar-"));
   const extractedRoot = path.join(tempRoot, "app");
   const tempArchive = path.join(tempRoot, "app.asar");
@@ -487,21 +496,35 @@ async function patchAsar(archivePath, resourcesDir, metadata) {
     asar.extractAll(archivePath, extractedRoot);
     const manifestPath = path.join(extractedRoot, "package.json");
     fs.writeFileSync(manifestPath, `${JSON.stringify(appManifest, null, 2)}\n`);
-    const bootstrapDestination = path.join(extractedRoot, BOOTSTRAP_ENTRY);
-    if (fs.existsSync(bootstrapDestination)) {
-      throw new Error(`The app already contains reserved Minitron bootstrap path ${BOOTSTRAP_ENTRY}`);
-    }
-    fs.copyFileSync(bootstrapPath, bootstrapDestination);
-
     const { streams, knownSidecarPaths } = buildAsarStreams(rawHeader, extractedRoot);
-    const bootstrapStat = fs.statSync(bootstrapDestination);
-    streams.push({
-      type: "file",
-      path: BOOTSTRAP_ENTRY,
-      streamGenerator: () => fs.createReadStream(bootstrapDestination),
-      unpacked: false,
-      stat: bootstrapStat,
-    });
+    for (const [entry, bootstrapPath] of bootstrapPaths) {
+      const bootstrapDestination = path.join(extractedRoot, entry);
+      const existing = lstatOrUndefined(bootstrapDestination);
+      if (existing && !alreadyPatched) {
+        throw new Error(`The app already contains reserved Minitron bootstrap path ${entry}`);
+      }
+      if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+        throw new Error(`An existing Minitron bootstrap path must be a regular file: ${entry}`);
+      }
+      fs.copyFileSync(bootstrapPath, bootstrapDestination);
+      const bootstrapStat = fs.statSync(bootstrapDestination);
+      const stream = streams.find((candidate) => candidate.path === entry);
+      if (stream) {
+        stream.type = "file";
+        stream.streamGenerator = () => fs.createReadStream(bootstrapDestination);
+        stream.unpacked = false;
+        stream.stat = bootstrapStat;
+        delete stream.symlink;
+      } else {
+        streams.push({
+          type: "file",
+          path: entry,
+          streamGenerator: () => fs.createReadStream(bootstrapDestination),
+          unpacked: false,
+          stat: bootstrapStat,
+        });
+      }
+    }
     await asar.createPackageFromStreams(tempArchive, streams);
     if (fs.existsSync(sourceSidecar)) {
       mergeSidecarExtras(sourceSidecar, outputSidecar, knownSidecarPaths);
@@ -559,6 +582,7 @@ async function preserveAsarMetadata(archivePath, originalHeader, extractedRoot) 
   const generated = asar.getRawHeader(archivePath);
   const changedFiles = new Map([
     ["package.json", path.join(extractedRoot, "package.json")],
+    ...BOOTSTRAP_ENTRIES.map((entry) => [entry, path.join(extractedRoot, entry)]),
   ]);
 
   walkAsarLeaves(originalHeader, (relativePath, sourceEntry) => {
@@ -579,12 +603,13 @@ async function preserveAsarMetadata(archivePath, originalHeader, extractedRoot) 
   walkAsarLeaves(generated.header, (relativePath, entry) => generatedLeaves.push([relativePath, entry]));
   for (const [relativePath, entry] of generatedLeaves) {
     if (!findAsarEntry(originalHeader, relativePath)) {
-      if (relativePath === BOOTSTRAP_ENTRY && originalHasIntegrity) {
-        entry.integrity = computeIntegrity(fs.readFileSync(path.join(extractedRoot, BOOTSTRAP_ENTRY)));
+      const changedFile = changedFiles.get(relativePath);
+      if (changedFile && originalHasIntegrity) {
+        entry.integrity = computeIntegrity(fs.readFileSync(changedFile));
       } else if (!originalHasIntegrity) {
         delete entry.integrity;
       }
-      if (relativePath === BOOTSTRAP_ENTRY) changedFiles.delete(relativePath);
+      changedFiles.delete(relativePath);
       continue;
     }
     if (!originalHasIntegrity) delete entry.integrity;
@@ -684,13 +709,14 @@ function computeIntegrity(contents) {
   };
 }
 
-function prepareManifest(originalManifest, metadata) {
+function prepareManifest(originalManifest, metadata, alreadyPatched) {
   if (!originalManifest || typeof originalManifest !== "object" || Array.isArray(originalManifest)) {
     throw new Error("Packaged app package.json must contain an object");
   }
   const currentMain = originalManifest.main;
-  const originalMain = currentMain === BOOTSTRAP_ENTRY ? originalManifest.minitronOriginalMain : currentMain;
-  validateOriginalMain(originalMain);
+  const originalMain = alreadyPatched ? originalManifest.minitronOriginalMain : currentMain;
+  const canonicalOriginalMain = validateOriginalMain(originalMain);
+  const bootstrapEntry = resolveBootstrapEntry(canonicalOriginalMain, originalManifest.type);
 
   const existingMetadata = originalManifest.metadata;
   if (existingMetadata !== undefined && (!existingMetadata || typeof existingMetadata !== "object" || Array.isArray(existingMetadata))) {
@@ -704,8 +730,8 @@ function prepareManifest(originalManifest, metadata) {
   return {
     ...originalManifest,
     productName: metadata.productName,
-    main: BOOTSTRAP_ENTRY,
-    minitronOriginalMain: originalMain,
+    main: bootstrapEntry,
+    minitronOriginalMain: canonicalOriginalMain,
     metadata: {
       ...(existingMetadata || {}),
       minitron: {
@@ -716,6 +742,25 @@ function prepareManifest(originalManifest, metadata) {
       },
     },
   };
+}
+
+function isPreviouslyPatchedManifest(manifest, metadata) {
+  if (!manifest || !BOOTSTRAP_ENTRIES.includes(manifest.main)) return false;
+  const minitron = manifest.metadata && manifest.metadata.minitron;
+  if (!minitron || minitron.appId !== metadata.appId || minitron.executableName !== metadata.executableName) return false;
+  try {
+    const originalMain = validateOriginalMain(manifest.minitronOriginalMain);
+    return manifest.main === resolveBootstrapEntry(originalMain, manifest.type);
+  } catch {
+    return false;
+  }
+}
+
+function resolveBootstrapEntry(originalMain, packageType) {
+  const extension = path.extname(originalMain).toLowerCase();
+  return extension === ".mjs" || (extension === ".js" && packageType === "module")
+    ? ESM_BOOTSTRAP_ENTRY
+    : CJS_BOOTSTRAP_ENTRY;
 }
 
 function validateOriginalMain(value) {
@@ -840,15 +885,24 @@ function mergeSidecarExtras(sourceRoot, destinationRoot, knownSidecarPaths) {
 
 function verifyPatchedArchive(archivePath, expectedManifest, metadata, originalHeader) {
   const manifest = readArchiveJson(archivePath, "package.json");
-  if (manifest.main !== BOOTSTRAP_ENTRY || manifest.minitronOriginalMain !== expectedManifest.minitronOriginalMain) {
+  if (manifest.main !== expectedManifest.main || manifest.minitronOriginalMain !== expectedManifest.minitronOriginalMain) {
     throw new Error("Minitron ASAR bootstrap entry did not survive archive repacking");
   }
   const originalMain = validateOriginalMain(manifest.minitronOriginalMain);
   const mainStat = asar.statFile(archivePath, toNativeAsarPath(originalMain));
   if (!mainStat || mainStat.files) throw new Error(`Original application main is missing from repacked ASAR: ${originalMain}`);
-  const bootstrapStat = asar.statFile(archivePath, BOOTSTRAP_ENTRY);
-  if (!bootstrapStat || bootstrapStat.unpacked) throw new Error("Minitron bootstrap must be embedded in app.asar");
-  const originalUnpacked = collectUnpackedFiles(originalHeader);
+  const patchedHeader = asar.getRawHeader(archivePath).header;
+  const expectsIntegrity = headerHasIntegrity(originalHeader);
+  for (const entry of BOOTSTRAP_ENTRIES) {
+    const bootstrapStat = asar.statFile(archivePath, toNativeAsarPath(entry));
+    if (!bootstrapStat || bootstrapStat.unpacked) throw new Error(`Minitron bootstrap ${entry} must be embedded in app.asar`);
+    const expectedIntegrity = expectsIntegrity ? computeIntegrity(asar.extractFile(archivePath, entry)) : undefined;
+    const actualIntegrity = findAsarEntry(patchedHeader, entry).integrity;
+    if (JSON.stringify(actualIntegrity) !== JSON.stringify(expectedIntegrity)) {
+      throw new Error(`Minitron bootstrap integrity verification failed for ${entry}`);
+    }
+  }
+  const originalUnpacked = collectUnpackedFiles(originalHeader).filter((file) => !BOOTSTRAP_ENTRIES.includes(file));
   for (const file of originalUnpacked) {
     const stat = asar.statFile(archivePath, toNativeAsarPath(file));
     if (!stat.unpacked) throw new Error(`Repacking changed an ASAR unpacked member into an archived member: ${file}`);

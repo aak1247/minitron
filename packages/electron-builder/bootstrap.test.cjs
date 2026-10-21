@@ -9,6 +9,7 @@ const test = require("node:test");
 const { pathToFileURL } = require("node:url");
 
 const BOOTSTRAP_PATH = path.join(__dirname, "__minitron_bootstrap__.cjs");
+const ESM_BOOTSTRAP_PATH = path.join(__dirname, "__minitron_bootstrap__.mjs");
 
 test("loads a CommonJS application entry unchanged when Minitron is not active", (t) => {
   const fixture = createFixture(t, { main: "dist/main.js" });
@@ -82,7 +83,7 @@ test("activates runtime identity and routes Windows relaunch integrations throug
   assert.deepEqual(findCall(record, "relaunch").args, [{ args: ["--business-argument"], execPath: launcher }]);
   assert.deepEqual(findCalls(record, "relaunch")[1].args, [{ args: ["--keep-default-path"], execPath: launcher }]);
   assert.deepEqual(findCalls(record, "relaunch")[2].args, [{ args: ["--keep-this"], execPath: "C:/developer/custom.exe" }]);
-  assert.deepEqual(findCalls(record, "relaunch")[3].args, [{ args: ["--business-argument"], execPath: "C:/developer/custom.exe" }]);
+  assert.deepEqual(findCalls(record, "relaunch")[3].args, [{ execPath: "C:/developer/custom.exe" }]);
   assert.deepEqual(findCall(record, "setLoginItemSettings").args, [{ openAtLogin: true, args: ["--login-flag"], path: launcher }]);
   assert.deepEqual(findCalls(record, "setLoginItemSettings")[1].args, [{ openAtLogin: true, path: "C:/developer/login.exe", args: ["--custom-login"] }]);
   assert.deepEqual(findCall(record, "getLoginItemSettings").args, [{ args: ["--login-flag"], path: launcher }]);
@@ -105,7 +106,7 @@ test("loads ESM entries and uses the app path for resources when no resource ove
   writeAppFile(
     fixture,
     "dist/main.mjs",
-    `globalThis.__electronMockCalls.push({ type: "entry", url: import.meta.url, cwd: process.cwd() });\n`,
+    `await new Promise((resolve) => setTimeout(resolve, 20));\nglobalThis.__electronMockCalls.push({ type: "entry", url: import.meta.url, cwd: process.cwd() });\n`,
   );
 
   const result = runFixture(fixture, {
@@ -140,16 +141,21 @@ test("sets a configured Linux desktop identity and preserves an explicit user da
   assert.equal(record.calls.some((call) => call.type === "setPath"), false);
 });
 
-test("rejects a bootstrap loop", (t) => {
-  const fixture = createFixture(t, { main: "__minitron_bootstrap__.cjs" });
-  const result = runFixture(fixture, {
-    launcher: path.join(fixture.root, "minitron.exe"),
-    platform: "win32",
-    resourcesDir: fixture.resourcesDir,
-  });
+test("rejects either reserved bootstrap path as the original application entry", (t) => {
+  for (const { main, type } of [
+    { main: "__minitron_bootstrap__.cjs", type: "commonjs" },
+    { main: "__minitron_bootstrap__.mjs", type: "module" },
+  ]) {
+    const fixture = createFixture(t, { main, type });
+    const result = runFixture(fixture, {
+      launcher: path.join(fixture.root, "minitron.exe"),
+      platform: "win32",
+      resourcesDir: fixture.resourcesDir,
+    });
 
-  assert.notEqual(result.exitCode, 0);
-  assert.match(result.stderr, /cannot load itself/);
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /cannot load itself/);
+  }
 });
 
 test("sets the macOS dock icon when the app exposes the dock API", (t) => {
@@ -184,6 +190,11 @@ function createFixture(t, { main, type = "commonjs", desktopName }) {
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync(appDataDir, { recursive: true });
   fs.copyFileSync(BOOTSTRAP_PATH, path.join(appDir, "__minitron_bootstrap__.cjs"));
+  fs.copyFileSync(ESM_BOOTSTRAP_PATH, path.join(appDir, "__minitron_bootstrap__.mjs"));
+  const mainExtension = path.extname(main).toLowerCase();
+  const bootstrapEntry = mainExtension === ".mjs" || (mainExtension === ".js" && type === "module")
+    ? "__minitron_bootstrap__.mjs"
+    : "__minitron_bootstrap__.cjs";
   fs.writeFileSync(
     path.join(appDir, "package.json"),
     JSON.stringify({
@@ -191,7 +202,7 @@ function createFixture(t, { main, type = "commonjs", desktopName }) {
       productName: "Acme Desktop",
       type,
       ...(desktopName ? { desktopName } : {}),
-      main: "__minitron_bootstrap__.cjs",
+      main: bootstrapEntry,
       minitronOriginalMain: main,
       metadata: {
         other: { keep: true },
@@ -213,6 +224,7 @@ function createFixture(t, { main, type = "commonjs", desktopName }) {
     cwd,
     mainPath: path.resolve(appDir, main.replaceAll("\\", "/")),
     preloadPath,
+    bootstrapPath: path.join(appDir, bootstrapEntry),
     recordPath: path.join(root, "record.json"),
     resourcesDir,
     root,
@@ -285,7 +297,7 @@ function runFixture(fixture, { args = [], launcher, platform, resourcesDir } = {
 
   const result = spawnSync(
     process.execPath,
-    ["--require", fixture.preloadPath, path.join(fixture.appDir, "__minitron_bootstrap__.cjs"), ...args],
+    ["--require", fixture.preloadPath, fixture.bootstrapPath, ...args],
     { cwd: fixture.cwd, encoding: "utf8", env },
   );
   return { exitCode: result.status, stderr: result.stderr, stdout: result.stdout };

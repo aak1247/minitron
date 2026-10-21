@@ -165,11 +165,13 @@ test("afterPack converts a Windows fixture, preserving ASAR unpacked files and u
     },
   });
   assert.notEqual(asar.statFile(fixture.archivePath, "__minitron_bootstrap__.cjs").unpacked, true);
+  assert.notEqual(asar.statFile(fixture.archivePath, "__minitron_bootstrap__.mjs").unpacked, true);
   const patchedHeader = asar.getRawHeader(fixture.archivePath).header;
   assert.equal(patchedHeader.files.dist.files.main.files["index.js"].executable, true);
   assert.deepEqual(patchedHeader.files.dist.files.main.files["index.js"].integrity, fixture.originalMainIntegrity);
   assert.deepEqual(patchedHeader.files["package.json"].integrity, computeIntegrity(asar.extractFile(fixture.archivePath, "package.json")));
   assert.deepEqual(patchedHeader.files["__minitron_bootstrap__.cjs"].integrity, computeIntegrity(asar.extractFile(fixture.archivePath, "__minitron_bootstrap__.cjs")));
+  assert.deepEqual(patchedHeader.files["__minitron_bootstrap__.mjs"].integrity, computeIntegrity(asar.extractFile(fixture.archivePath, "__minitron_bootstrap__.mjs")));
   assert.ok(asar.extractFile(fixture.archivePath, "__minitron_bootstrap__.cjs").includes(Buffer.from("MINITRON_LAUNCHER")));
   assert.equal(asar.statFile(fixture.archivePath, "native/addon.node").unpacked, true);
   assert.equal(asar.extractFile(fixture.archivePath, "native/addon.node").toString("utf8"), "native-addon");
@@ -191,6 +193,26 @@ test("afterPack converts a Windows fixture, preserving ASAR unpacked files and u
     "",
   ].join("\n"));
   assert.deepEqual(hookCalls, ["converted"]);
+});
+
+test("afterPack selects the ESM wrapper for .mjs and package type module entries", async (t) => {
+  for (const appManifest of [
+    { main: "dist/main/index.mjs" },
+    { main: "dist/main/index.js", type: "module" },
+  ]) {
+    const fixture = await makeFixture(t, "win32", appManifest);
+    await afterPack(makeContext(fixture, "win32"), {
+      launcherPath: fixture.launcherPath,
+      manifestUrl: "https://updates.example.test/manifest.json",
+      iconPath: fixture.iconPath,
+    }, () => ({ status: 0, stdout: "0.2.0", stderr: "" }));
+
+    const manifest = JSON.parse(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"));
+    assert.equal(manifest.main, "__minitron_bootstrap__.mjs");
+    assert.equal(manifest.minitronOriginalMain, appManifest.main);
+    assert.notEqual(asar.statFile(fixture.archivePath, "__minitron_bootstrap__.cjs").unpacked, true);
+    assert.notEqual(asar.statFile(fixture.archivePath, "__minitron_bootstrap__.mjs").unpacked, true);
+  }
 });
 
 test("afterPack rejects a host Electron distribution for a different target before patching app.asar", async (t) => {
@@ -223,7 +245,7 @@ test("afterPack preserves the Linux executable name and replaces only the offici
   assert.equal(fs.readFileSync(path.join(fixture.resourcesDir, "custom.pak"), "utf8"), "application-owned-content");
 });
 
-async function makeFixture(t, platform = "win32") {
+async function makeFixture(t, platform = "win32", manifestOverrides = {}) {
   const root = makeTempDir();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const projectDir = path.join(root, "project");
@@ -232,25 +254,34 @@ async function makeFixture(t, platform = "win32") {
   const appSourceDir = path.join(root, "app-source");
   const electronDist = path.join(root, "electron-dist");
   fs.mkdirSync(resourcesDir, { recursive: true });
-  fs.mkdirSync(path.join(appSourceDir, "dist", "main"), { recursive: true });
   fs.mkdirSync(path.join(appSourceDir, "native"), { recursive: true });
   fs.mkdirSync(electronDist, { recursive: true });
   fs.mkdirSync(path.join(electronDist, "resources"), { recursive: true });
-  fs.writeFileSync(path.join(appSourceDir, "package.json"), JSON.stringify({
+  const originalMain = manifestOverrides.main || "dist/main/index.js";
+  const originalMainPath = path.join(appSourceDir, ...originalMain.split("/"));
+  fs.mkdirSync(path.dirname(originalMainPath), { recursive: true });
+  const appManifest = {
     name: "fixture-app",
     version: "1.2.3",
     productName: "Old Product Name",
-    main: "dist/main/index.js",
+    main: originalMain,
     desktopName: "com.fixture.app.desktop",
     metadata: { retained: "user-metadata" },
+    ...manifestOverrides,
+  };
+  fs.writeFileSync(path.join(appSourceDir, "package.json"), JSON.stringify({
+    ...appManifest,
   }, null, 2));
-  fs.writeFileSync(path.join(appSourceDir, "dist", "main", "index.js"), "module.exports = 'original-main';\n");
+  const isModule = path.extname(originalMain).toLowerCase() === ".mjs" || manifestOverrides.type === "module";
+  fs.writeFileSync(originalMainPath, isModule ? "export const fixtureMain = true;\n" : "module.exports = 'original-main';\n");
   fs.writeFileSync(path.join(appSourceDir, "native", "addon.node"), "native-addon");
   const archivePath = path.join(resourcesDir, "app.asar");
   await asar.createPackageWithOptions(appSourceDir, archivePath, { unpack: "**/*.node" });
   const originalHeader = asar.getRawHeader(archivePath).header;
-  const originalMainIntegrity = structuredClone(originalHeader.files.dist.files.main.files["index.js"].integrity);
-  originalHeader.files.dist.files.main.files["index.js"].executable = true;
+  const originalMainEntry = findHeaderEntry(originalHeader, originalMain);
+  assert.ok(originalMainEntry);
+  const originalMainIntegrity = structuredClone(originalMainEntry.integrity);
+  originalMainEntry.executable = true;
   rewriteFixtureHeader(archivePath, originalHeader);
   fs.mkdirSync(path.join(`${archivePath}.unpacked`, "native"), { recursive: true });
   fs.writeFileSync(path.join(`${archivePath}.unpacked`, "native", "developer-extra.bin"), "untracked-sidecar-extra");
@@ -304,6 +335,15 @@ function computeIntegrity(contents) {
     blockSize,
     blocks,
   };
+}
+
+function findHeaderEntry(header, relativePath) {
+  let current = header;
+  for (const segment of relativePath.split("/")) {
+    current = current && current.files && current.files[segment];
+    if (!current) return undefined;
+  }
+  return current;
 }
 
 function makeContext(fixture, platform) {

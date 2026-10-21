@@ -14,7 +14,7 @@ if (launcherPath) {
   configureMinitronRuntime(app, packageJson, launcherPath);
 }
 
-loadOriginalMain(originalMain, packageJson);
+module.exports = { ready: loadOriginalMain(originalMain, packageJson) };
 
 function resolveOriginalMain(value) {
   if (!nonEmptyString(value)) {
@@ -32,7 +32,10 @@ function resolveOriginalMain(value) {
   }
 
   const resolved = path.resolve(__dirname, ...segments);
-  if (samePath(resolved, __filename)) {
+  if (
+    samePath(resolved, __filename) ||
+    samePath(resolved, path.join(__dirname, "__minitron_bootstrap__.mjs"))
+  ) {
     throw new Error("Minitron bootstrap cannot load itself as the original application entry point");
   }
   return resolved;
@@ -158,6 +161,7 @@ function configureLauncherRouting(app, launcher) {
     if (!options || typeof options !== "object" || Array.isArray(options)) {
       return [{ args: process.argv.slice(2), execPath: launcher }, ...args.slice(1)];
     }
+    if (nonEmptyString(options.execPath)) return args;
     const routedOptions = { ...options };
     if (routedOptions.args === undefined) routedOptions.args = process.argv.slice(2);
     if (!nonEmptyString(routedOptions.execPath)) routedOptions.execPath = launcher;
@@ -246,16 +250,12 @@ function loadOriginalMain(entryPath, packageManifest) {
   const isModule = extension === ".mjs" || (extension === ".js" && packageManifest.type === "module");
 
   if (isModule) {
-    import(pathToFileURL(entryPath).href).catch((error) => {
-      setImmediate(() => {
-        throw error;
-      });
-    });
-    return;
+    return import(pathToFileURL(entryPath).href);
   }
 
   const Module = require("node:module");
   Module._load(entryPath, null, true);
+  return undefined;
 }
 
 function samePath(left, right) {
