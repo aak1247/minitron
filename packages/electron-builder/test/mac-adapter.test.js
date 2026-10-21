@@ -60,7 +60,7 @@ test("afterPack converts a branded .app and preserves bundle identity and app re
   const preinstall = fs.readFileSync(path.join(generatedScripts, "preinstall"), "utf8");
   assert.match(preinstall, /LAUNCHER="\$APP_PATH\/Contents\/MacOS\/"'Fixture'/);
   assert.match(preinstall, /--app-dir "\$APP_PATH" --stop/);
-  assert.match(preinstall, /dscl \. -list \/Users UniqueID/);
+  assert.match(preinstall, /dscl \/Search -list \/Users UniqueID/);
   assert.match(preinstall, /--app-dir "\$APP_PATH" --runtime-root/);
   assert.match(preinstall, /launchctl asuser "\$USER_ID"/);
   assert.match(preinstall, /ELECTRON_RUNTIME_ROOT="\$RUNTIME_ROOT"/);
