@@ -163,4 +163,8 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
           TARGET: ${{ github.sha }}
         run: |
-          gh release create "$TAG" --target "$TARGET" --title "minitron $TAG" --notes-file dist/release/release-notes.md dist/release/*.tgz dist/release/*.zip dist/release/*.tar.gz dist/release/SHA256SUMS dist/release/sizes.json dist/release/install.ps1 dist/release/install.sh
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; preserving published assets."
+          else
+            gh release create "$TAG" --target "$TARGET" --title "minitron $TAG" --notes-file dist/release/release-notes.md dist/release/*.tgz dist/release/*.zip dist/release/*.tar.gz dist/release/SHA256SUMS dist/release/sizes.json dist/release/install.ps1 dist/release/install.sh
+          fi
