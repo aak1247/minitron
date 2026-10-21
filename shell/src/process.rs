@@ -50,8 +50,18 @@ pub fn is_alive(pid: u32) -> bool {
         if pid > i32::MAX as u32 {
             return false;
         }
-        if let Ok(info) = macos_process_info(pid) {
-            return info.pbi_status != 5; // SZOMB: exited, awaiting collection by its parent.
+        match macos_process_info(pid) {
+            Ok(info) => return info.pbi_status != 5, // SZOMB: awaiting collection by parent.
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.raw_os_error() == Some(libc::ESRCH)) =>
+            {
+                // proc_pidinfo can report ESRCH for a zombie while kill(pid, 0)
+                // still succeeds. The process can no longer execute app code.
+                return false;
+            }
+            Err(_) => {}
         }
         unsafe {
             libc::kill(pid as i32, 0) == 0
