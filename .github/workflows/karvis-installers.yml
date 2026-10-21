@@ -16,6 +16,9 @@ permissions:
 
 jobs:
   installers:
+    # Draft release assets are visible only to a token with repository write access.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
