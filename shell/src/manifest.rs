@@ -107,6 +107,10 @@ impl Manifest {
 /// Fetch, authenticate and validate the manifest. Cleartext HTTP is only
 /// accepted when explicitly enabled and the URL host is loopback.
 pub fn fetch(cfg: &ShellConfig) -> Result<Manifest> {
+    ensure!(
+        !cfg.manifest_url.trim().is_empty(),
+        "manifest_url is not configured"
+    );
     let url = validate_url(&cfg.manifest_url, cfg.allow_localhost_http)?;
     // Localhost development manifests must reach the loopback listener
     // directly, even if another dependency later enables proxy-from-env.
@@ -138,6 +142,28 @@ pub fn fetch(cfg: &ShellConfig) -> Result<Manifest> {
         "manifest exceeds 4 MiB limit"
     );
     parse_manifest(cfg, &body)
+}
+
+/// Return the build-time-pinned runtime artifact only for the exact runtime
+/// configured by this installation. It is validated by the same URL, size,
+/// and SHA rules used for artifacts inside an authenticated manifest.
+pub fn configured_runtime_artifact(
+    cfg: &ShellConfig,
+    key: &RuntimeKey,
+) -> Result<Option<&Artifact>> {
+    let configured_key = RuntimeKey::current(&cfg.required_runtime);
+    configured_key
+        .validate()
+        .context("invalid configured required_runtime")?;
+    if key != &configured_key {
+        return Ok(None);
+    }
+    let Some(artifact) = cfg.runtime_download.as_ref() else {
+        return Ok(None);
+    };
+    validate_artifact(artifact, cfg.allow_localhost_http)
+        .context("validate configured runtime_download")?;
+    Ok(Some(artifact))
 }
 
 fn parse_manifest(cfg: &ShellConfig, body: &[u8]) -> Result<Manifest> {
@@ -229,7 +255,7 @@ fn validate_platform(platform: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_artifact(artifact: &Artifact, allow_http: bool) -> Result<()> {
+pub(crate) fn validate_artifact(artifact: &Artifact, allow_http: bool) -> Result<()> {
     ensure!(artifact.size > 0, "artifact size must be positive");
     ensure!(
         artifact.sha256.len() == 64 && artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -486,11 +512,61 @@ mod tests {
             app_id: "example.app".into(),
             required_runtime: "32.2.0".into(),
             manifest_url: "https://example.invalid/manifest.json".into(),
+            runtime_download: None,
             app_version: "1.0.0".into(),
             allow_localhost_http: false,
             manifest_public_key: None,
             app_directory: None,
         }
+    }
+
+    #[test]
+    fn configured_runtime_artifact_is_only_available_for_exact_runtime_key() {
+        let mut cfg = test_config();
+        cfg.runtime_download = Some(Artifact {
+            url: "https://cdn.example.invalid/electron.zip".into(),
+            sha256: "a".repeat(64),
+            size: 1234,
+        });
+        let configured = RuntimeKey::current(&cfg.required_runtime);
+        assert_eq!(
+            configured_runtime_artifact(&cfg, &configured)
+                .unwrap()
+                .unwrap()
+                .size,
+            1234
+        );
+        assert!(
+            configured_runtime_artifact(&cfg, &RuntimeKey::current("34.1.0"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn configured_runtime_artifact_uses_existing_manifest_artifact_validation() {
+        let mut cfg = test_config();
+        cfg.runtime_download = Some(Artifact {
+            url: "http://example.invalid/electron.zip".into(),
+            sha256: "a".repeat(64),
+            size: 1234,
+        });
+        let key = RuntimeKey::current(&cfg.required_runtime);
+        assert!(configured_runtime_artifact(&cfg, &key).is_err());
+
+        cfg.allow_localhost_http = true;
+        cfg.runtime_download.as_mut().unwrap().url = "http://127.0.0.1/electron.zip".into();
+        assert!(configured_runtime_artifact(&cfg, &key).unwrap().is_some());
+        cfg.runtime_download.as_mut().unwrap().size = 0;
+        assert!(configured_runtime_artifact(&cfg, &key).is_err());
+    }
+
+    #[test]
+    fn empty_manifest_url_fails_without_attempting_a_request() {
+        let mut cfg = test_config();
+        cfg.manifest_url.clear();
+        let error = fetch(&cfg).unwrap_err().to_string();
+        assert!(error.contains("manifest_url is not configured"));
     }
 
     fn artifact_json() -> String {

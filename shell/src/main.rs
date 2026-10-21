@@ -102,6 +102,10 @@ fn run() -> Result<i32> {
         return Ok(0);
     }
     if args.first().is_some_and(|x| x == "--check-update") {
+        if cfg.manifest_url.trim().is_empty() {
+            println!("UPDATE_NOT_CONFIGURED: manifest_url is not configured");
+            return Ok(0);
+        }
         let m = manifest::fetch(&cfg)?;
         if selfupdate::maybe_stage(&cfg, &m, &[])? {
             return Ok(0);
@@ -146,20 +150,35 @@ fn run() -> Result<i32> {
         Ok(rt) => rt,
         Err(error) if offline => return Err(error.context("runtime unavailable in offline mode")),
         Err(_) => {
-            let m = manifest::fetch(&cfg)?;
-            if selfupdate::maybe_stage(&cfg, &m, &args)? {
-                return Ok(0);
-            }
-            let artifact = m.runtime_artifact_for(&active.runtime_key)?;
+            let configured_artifact =
+                manifest::configured_runtime_artifact(&cfg, &active.runtime_key)?.cloned();
+            let manifest_artifact = if configured_artifact.is_none() {
+                anyhow::ensure!(
+                    !cfg.manifest_url.trim().is_empty(),
+                    "runtime {} v{} is unavailable and no matching runtime_download or manifest_url is configured",
+                    active.runtime_key.platform,
+                    active.runtime_key.version
+                );
+                let m = manifest::fetch(&cfg)?;
+                if selfupdate::maybe_stage(&cfg, &m, &args)? {
+                    return Ok(0);
+                }
+                Some(m.runtime_artifact_for(&active.runtime_key)?.clone())
+            } else {
+                None
+            };
+            let artifact = configured_artifact
+                .or(manifest_artifact)
+                .context("runtime download source disappeared while preparing the installation")?;
             if headless {
                 runtime::ensure_for(
                     &cfg,
                     &active.runtime_key,
-                    artifact,
+                    &artifact,
                     Box::new(|got, total| eprintln!("RUNTIME_DOWNLOAD:{got}/{total}")),
                 )?
             } else {
-                state::install_runtime(&cfg, &active.runtime_key, artifact)?
+                state::install_runtime(&cfg, &active.runtime_key, &artifact)?
             }
         }
     };
@@ -230,6 +249,9 @@ fn management_command(args: &[OsString]) -> Result<Option<(ManagementCommand, Op
 }
 
 fn background_update(cfg: config::ShellConfig, restart_args: Vec<OsString>) {
+    if cfg.manifest_url.trim().is_empty() {
+        return;
+    }
     std::thread::spawn(move || {
         let result = (|| -> Result<()> {
             let m = manifest::fetch(&cfg)?;

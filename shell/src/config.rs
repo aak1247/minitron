@@ -1,5 +1,6 @@
 //! minitron.toml parsing and per-user runtime paths.
 
+use crate::manifest::Artifact;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 #[cfg(not(windows))]
@@ -13,8 +14,12 @@ pub struct ShellConfig {
     pub app_id: String,
     /// Exact Electron version for the initially installed release.
     pub required_runtime: String,
-    /// Update manifest URL.
+    /// Optional update manifest URL. An empty value disables hosted updates.
+    #[serde(default)]
     pub manifest_url: String,
+    /// Optional build-time-pinned Electron archive for the configured runtime.
+    #[serde(default)]
+    pub runtime_download: Option<Artifact>,
     /// Version of the initially installed application resources.
     pub app_version: String,
     /// Permit cleartext HTTP only for loopback development servers.
@@ -91,6 +96,10 @@ impl ShellConfig {
             !config.app_version.trim().is_empty(),
             "app_version must not be empty"
         );
+        if let Some(artifact) = &config.runtime_download {
+            crate::manifest::validate_artifact(artifact, config.allow_localhost_http)
+                .context("validate configured runtime_download")?;
+        }
         config.app_directory = Some(
             path.parent()
                 .context("configuration path has no parent")?
@@ -278,14 +287,49 @@ mod tests {
         let path = dir.join("shell.toml");
         std::fs::write(
             &path,
-            "app_id='example.app'\nrequired_runtime='32.2.0'\nmanifest_url='https://example.invalid/manifest.json'\napp_version='1.0.0'\n",
+            "app_id='example.app'\nrequired_runtime='32.2.0'\napp_version='1.0.0'\n",
         )
         .unwrap();
 
         let cfg = ShellConfig::load_from(&path).unwrap();
+        assert!(cfg.manifest_url.is_empty());
+        assert!(cfg.runtime_download.is_none());
         assert!(!cfg.allow_localhost_http);
         assert_eq!(cfg.manifest_public_key, None);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn runtime_download_is_deserialized_as_an_optional_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("minitron.toml");
+        std::fs::write(
+            &path,
+            "app_id='example.app'\nrequired_runtime='32.2.0'\napp_version='1.0.0'\n[runtime_download]\nurl='https://cdn.example.invalid/electron.zip'\nsha256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\nsize=1234\n",
+        )
+        .unwrap();
+
+        let cfg = ShellConfig::load_from(&path).unwrap();
+        let artifact = cfg.runtime_download.unwrap();
+        assert_eq!(artifact.url, "https://cdn.example.invalid/electron.zip");
+        assert_eq!(artifact.sha256, "a".repeat(64));
+        assert_eq!(artifact.size, 1234);
+    }
+
+    #[test]
+    fn invalid_runtime_download_is_rejected_while_loading_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("minitron.toml");
+        std::fs::write(
+            &path,
+            "app_id='example.app'\nrequired_runtime='32.2.0'\napp_version='1.0.0'\n[runtime_download]\nurl='https://cdn.example.invalid/electron.zip'\nsha256='bad'\nsize=1234\n",
+        )
+        .unwrap();
+
+        assert!(ShellConfig::load_from(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("validate configured runtime_download"));
     }
 
     #[test]
