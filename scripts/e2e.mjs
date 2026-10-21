@@ -402,6 +402,20 @@ try {
   report.finished = new Date().toISOString(); report.requests = requests;
   if (!report.passed) {
     report.processes = processRecords.map(record => ({ ...record, stdout: record.stdout.slice(-16000), stderr: record.stderr.slice(-16000) }));
+    if (process.platform === 'darwin') {
+      report.crashes = [];
+      for (const directory of [path.join(os.homedir(), 'Library/Logs/DiagnosticReports'), '/Library/Logs/DiagnosticReports']) {
+        for (const name of await fs.readdir(directory).catch(() => [])) {
+          if (!/\.(ips|crash)$/.test(name)) continue;
+          const filename = path.join(directory, name);
+          const metadata = await fs.stat(filename).catch(() => null);
+          if (!metadata?.isFile() || metadata.mtimeMs < Date.parse(report.started) || metadata.size > 2 * 1024 * 1024) continue;
+          const contents = await fs.readFile(filename, 'utf8').catch(() => '');
+          if (contents.includes(path.basename(work))) report.crashes.push({ name, contents: contents.slice(0, 60000) });
+          if (report.crashes.length >= 8) break;
+        }
+      }
+    }
     report.runtimeFiles = [];
     for (const relative of await fs.readdir(cache, { recursive: true }).catch(() => [])) {
       const metadata = await fs.stat(path.join(cache, relative)).catch(() => null);
