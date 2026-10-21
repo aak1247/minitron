@@ -184,28 +184,9 @@ pub fn reconcile_installed_base(cfg: &ShellConfig) -> Result<()> {
         }
         return Ok(());
     }
-    let inherited_active = read_state_file::<ActiveState>(cfg, "active.json")?;
-    let installer_base_changed = inherited_active.as_ref().is_some_and(|state| {
-        state.active.app_version != cfg.app_version
-            || state.active.runtime_key.version != cfg.required_runtime
-    });
-    if installer_base_changed {
-        let base = legacy_release(cfg)?;
-        let active = ActiveState {
-            schema: STATE_SCHEMA,
-            active: base,
-            previous: None,
-            txid: None,
-        };
-        write_active(cfg, &active)?;
-        remove_file_if_exists(&updates_dir(cfg)?.join("pending.json"))?;
-        remove_file_if_exists(&updates_dir(cfg)?.join("transaction.json"))?;
-        remove_dir_if_exists(&updates_dir(cfg)?.join("attempts"))?;
-        write_json(&path, &current)?;
-        crate::runtime::register(cfg, &retained_releases(cfg)?)
-            .context("reconcile runtime refs for installer base")?;
-        return Ok(());
-    }
+    // Older launchers did not record the installed base. A newer active release
+    // can be a normal downloaded update, so preserve it until a subsequent
+    // installer change can be compared with this first baseline marker.
     write_json(&path, &current)?;
     Ok(())
 }
@@ -1043,6 +1024,41 @@ pub fn rollback(cfg: &ShellConfig) -> Result<Release> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn first_installer_baseline_preserves_an_existing_downloaded_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("minitron.toml");
+        std::fs::write(&config_path, "app_id='test.legacy-base'\nrequired_runtime='32.2.0'\nmanifest_url='https://example.invalid/manifest.json'\napp_version='1.0.0'\n").unwrap();
+        let cfg = ShellConfig::load_from(&config_path).unwrap();
+        let updates = cfg.updates_dir().unwrap();
+        let resources = updates
+            .join("releases/2.0.0")
+            .join("a".repeat(64))
+            .join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("app.asar"), b"downloaded app").unwrap();
+        let active = ActiveState {
+            schema: STATE_SCHEMA,
+            active: Release {
+                app_version: "2.0.0".into(),
+                runtime_key: RuntimeKey::current("32.2.0"),
+                resources_dir: resources.canonicalize().unwrap(),
+                artifact_sha256: "a".repeat(64),
+            },
+            previous: None,
+            txid: None,
+        };
+        write_active(&cfg, &active).unwrap();
+        reconcile_installed_base(&cfg).unwrap();
+        assert_eq!(read_active(&cfg).unwrap().active, active.active);
+        let base: InstalledBase = read_optional(&updates.join(INSTALLED_BASE_FILE))
+            .unwrap()
+            .unwrap();
+        assert_eq!(base.app_version, "1.0.0");
+        std::fs::remove_dir_all(updates.parent().unwrap()).unwrap();
+    }
 
     #[test]
     fn release_paths_are_version_and_hash_scoped() {
