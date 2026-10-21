@@ -388,12 +388,8 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    fn temp_dir() -> PathBuf {
-        let token = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("electron-download-{}-{token}", std::process::id()))
+    fn temp_dir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     fn artifact(url: String, bytes: &[u8]) -> Artifact {
@@ -426,7 +422,8 @@ mod tests {
 
     #[test]
     fn range_ignored_200_restarts_instead_of_appending() {
-        let dir = temp_dir();
+        let temp = temp_dir();
+        let dir = temp.path();
         let bytes = b"complete artifact body";
         let art = artifact(
             serve_one(response(
@@ -436,18 +433,17 @@ mod tests {
             )),
             bytes,
         );
-        std::fs::create_dir_all(&dir).unwrap();
         let id = artifact_id(&art);
         std::fs::write(dir.join(format!("artifact-{id}.part")), b"stale partial").unwrap();
 
-        let path = download(&art, &dir, Box::new(|_, _| {})).unwrap();
+        let path = download(&art, dir, Box::new(|_, _| {})).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), bytes);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn valid_206_range_is_appended_and_checked() {
-        let dir = temp_dir();
+        let temp = temp_dir();
+        let dir = temp.path();
         let bytes = b"whole payload";
         let prefix = b"whole ";
         let suffix = &bytes[prefix.len()..];
@@ -461,18 +457,17 @@ mod tests {
             serve_one(response("206 Partial Content", &headers, suffix)),
             bytes,
         );
-        std::fs::create_dir_all(&dir).unwrap();
         let id = artifact_id(&art);
         std::fs::write(dir.join(format!("artifact-{id}.part")), prefix).unwrap();
 
-        let path = download(&art, &dir, Box::new(|_, _| {})).unwrap();
+        let path = download(&art, dir, Box::new(|_, _| {})).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), bytes);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn malformed_content_range_is_rejected() {
-        let dir = temp_dir();
+        let temp = temp_dir();
+        let dir = temp.path();
         let bytes = b"whole payload";
         let art = artifact(
             serve_one(response(
@@ -482,11 +477,9 @@ mod tests {
             )),
             bytes,
         );
-        std::fs::create_dir_all(&dir).unwrap();
         let id = artifact_id(&art);
         std::fs::write(dir.join(format!("artifact-{id}.part")), b"pre").unwrap();
-        assert!(download(&art, &dir, Box::new(|_, _| {})).is_err());
-        std::fs::remove_dir_all(dir).unwrap();
+        assert!(download(&art, dir, Box::new(|_, _| {})).is_err());
     }
 
     #[test]
