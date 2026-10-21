@@ -21,6 +21,10 @@ pub struct ShellConfig {
     /// Optional base64-encoded Ed25519 public key used to verify manifests.
     #[serde(default)]
     pub manifest_public_key: Option<String>,
+    /// Directory used to locate this installation's config and updates.
+    /// `None` is retained only for callers constructing the config directly.
+    #[serde(skip)]
+    pub(crate) app_directory: Option<PathBuf>,
 }
 
 impl ShellConfig {
@@ -30,6 +34,13 @@ impl ShellConfig {
             .context("no exe dir")?
             .to_path_buf();
         Self::load_from(&Self::config_path(&exe_dir))
+    }
+
+    /// Load an installation's configuration when invoked from an external
+    /// helper, such as the NSIS uninstaller copied into `$PLUGINSDIR`.
+    pub fn load_for_app_dir(directory: &Path) -> Result<Self> {
+        anyhow::ensure!(directory.is_absolute(), "--app-dir must be absolute");
+        Self::load_from(&Self::config_path(directory))
     }
 
     // Prefer the branded name while retaining existing installations.
@@ -53,7 +64,7 @@ impl ShellConfig {
     pub fn load_from(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("read shell config {}", path.display()))?;
-        let config: Self = toml::from_str(&text).context("parse minitron configuration")?;
+        let mut config: Self = toml::from_str(&text).context("parse minitron configuration")?;
         anyhow::ensure!(!config.app_id.trim().is_empty(), "app_id must not be empty");
         anyhow::ensure!(
             !config.required_runtime.trim().is_empty(),
@@ -63,11 +74,19 @@ impl ShellConfig {
             !config.app_version.trim().is_empty(),
             "app_version must not be empty"
         );
+        config.app_directory = Some(
+            path.parent()
+                .context("configuration path has no parent")?
+                .to_path_buf(),
+        );
         Ok(config)
     }
 
     /// Application directory containing the shell executable and resources.
     pub fn app_dir(&self) -> Result<PathBuf> {
+        if let Some(directory) = &self.app_directory {
+            return Ok(directory.clone());
+        }
         Ok(std::env::current_exe()?
             .parent()
             .context("no exe dir")?
@@ -188,6 +207,21 @@ mod tests {
         assert_eq!(ShellConfig::config_path(dir.path()), legacy);
         std::fs::write(&preferred, "new").unwrap();
         assert_eq!(ShellConfig::config_path(dir.path()), preferred);
+    }
+
+    #[test]
+    fn helper_configuration_keeps_the_requested_installation_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("installed");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(
+            install.join("minitron.toml"),
+            "app_id='example.app'\nrequired_runtime='32.2.0'\nmanifest_url='https://example.invalid/manifest.json'\napp_version='1.0.0'\n",
+        )
+        .unwrap();
+
+        let config = ShellConfig::load_for_app_dir(&install).unwrap();
+        assert_eq!(config.app_dir().unwrap(), install);
     }
 
     #[test]

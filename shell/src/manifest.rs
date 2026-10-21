@@ -489,6 +489,7 @@ mod tests {
             app_version: "1.0.0".into(),
             allow_localhost_http: false,
             manifest_public_key: None,
+            app_directory: None,
         }
     }
 

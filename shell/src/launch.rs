@@ -47,19 +47,37 @@ pub fn launch(
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    command
+        .env(
+            "MINITRON_LAUNCHER",
+            ordinary_absolute_path(&std::env::current_exe()?)?,
+        )
+        .env(
+            "MINITRON_RESOURCES_DIR",
+            ordinary_absolute_path(&release.resources_dir)?,
+        )
+        .env("MINITRON_APP_ID", &cfg.app_id);
     if let Some(path) = &ready_path {
         command.env("ERS_READY_FILE", path);
     }
     if let Some(txid) = &txid {
         command.env("ERS_RELEASE_TXID", txid);
     }
+    let mut process_record = crate::lifecycle::ProcessRecordGuard::begin(cfg)?;
     let mut child = match command.spawn().context("spawn shared Electron") {
         Ok(child) => child,
         Err(error) => {
             crate::updater::finish_attempt(cfg, 1, false)?;
+            process_record.finish()?;
             return Err(error);
         }
     };
+    if let Err(error) = process_record.record_child(child.id()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = process_record.finish();
+        return Err(error);
+    }
     if let Err(error) = lease.record_child(child.id()) {
         let _ = child.kill();
         let _ = child.wait();
@@ -95,12 +113,19 @@ pub fn launch(
         std::thread::sleep(Duration::from_millis(25));
     };
     crate::updater::finish_attempt(cfg, code, healthy)?;
+    process_record.finish()?;
     {
         let _state = crate::updater::state_lock(cfg)?;
         crate::runtime::register(cfg, &crate::updater::retained_releases(cfg)?)?;
     }
     eprintln!("ELECTRON_EXIT:{code}");
     Ok(code)
+}
+
+fn ordinary_absolute_path(path: &std::path::Path) -> Result<OsString> {
+    let absolute = std::fs::canonicalize(path)
+        .with_context(|| format!("resolve absolute path {}", path.display()))?;
+    Ok(electron_app_argument(&absolute))
 }
 
 #[cfg(all(test, windows))]
