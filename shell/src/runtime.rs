@@ -735,14 +735,7 @@ fn create_macos_branded_helper(
     let source_info = source_contents.join("Info.plist");
     let source_plist = std::fs::read_to_string(&source_info)
         .with_context(|| format!("read Electron helper plist {}", source_info.display()))?;
-    let source_executable = plist_string_value(&source_plist, "CFBundleExecutable")
-        .context("Electron helper Info.plist has no CFBundleExecutable")?;
-    ensure!(
-        !source_executable.is_empty()
-            && !source_executable.contains('/')
-            && !source_executable.contains('\\'),
-        "invalid CFBundleExecutable in Electron helper Info.plist"
-    );
+    let source_executable = source_macos_helper_executable(source_bundle, &source_plist)?;
     let executable_name = format!("{helper_bundle_name}{suffix}");
     let mut branded_plist = source_plist;
     branded_plist = set_plist_string_value(&branded_plist, "CFBundleExecutable", &executable_name)?;
@@ -820,6 +813,33 @@ fn macos_helper_bundle_identifier(
     } else {
         filter_macos_bundle_identifier(&format!("{helper_identifier}.{component}"))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn source_macos_helper_executable(source_bundle: &Path, source_plist: &str) -> Result<String> {
+    let source_executable = plist_string_value(source_plist, "CFBundleExecutable")
+        .or_else(|| {
+            source_bundle
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        })
+        .context("Electron helper has no CFBundleExecutable or bundle basename")?;
+    ensure!(
+        !source_executable.is_empty()
+            && !source_executable.contains('/')
+            && !source_executable.contains('\\'),
+        "invalid CFBundleExecutable in Electron helper Info.plist"
+    );
+    let executable_path = source_bundle
+        .join("Contents/MacOS")
+        .join(&source_executable);
+    ensure!(
+        executable_path.is_file(),
+        "Electron helper executable is missing: {}",
+        executable_path.display()
+    );
+    Ok(source_executable)
 }
 
 #[cfg(target_os = "macos")]
@@ -943,8 +963,9 @@ fn macos_branded_helper_matches(
     let source_contents = source_bundle.join("Contents");
     let source_info = source_contents.join("Info.plist");
     let source_plist = std::fs::read_to_string(&source_info)?;
-    let Some(source_executable) = plist_string_value(&source_plist, "CFBundleExecutable") else {
-        return Ok(false);
+    let source_executable = match source_macos_helper_executable(source_bundle, &source_plist) {
+        Ok(executable) => executable,
+        Err(_) => return Ok(false),
     };
     let executable_name = format!("{helper_bundle_name}{suffix}");
     let expected_plist =
@@ -1068,26 +1089,46 @@ fn plist_string_value(plist: &str, key: &str) -> Option<String> {
 fn set_plist_string_value(plist: &str, key: &str, value: &str) -> Result<String> {
     let marker = format!("<key>{key}</key>");
     ensure!(
-        plist.matches(&marker).count() == 1,
-        "Electron helper Info.plist must contain exactly one {key} key"
+        plist.matches(&marker).count() <= 1,
+        "Electron helper Info.plist contains duplicate {key} keys"
     );
-    let key_start = plist.find(&marker).unwrap() + marker.len();
-    let value_start = plist[key_start..]
-        .find("<string>")
-        .map(|offset| key_start + offset + "<string>".len())
-        .context("expected a string value in Electron helper Info.plist")?;
-    let value_end = plist[value_start..]
-        .find("</string>")
-        .map(|offset| value_start + offset)
-        .context("unterminated string in Electron helper Info.plist")?;
     let escaped = value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
+
+    if let Some(key_position) = plist.find(&marker) {
+        let key_start = key_position + marker.len();
+        let value_start = plist[key_start..]
+            .find("<string>")
+            .map(|offset| key_start + offset + "<string>".len())
+            .context("expected a string value in Electron helper Info.plist")?;
+        let value_end = plist[value_start..]
+            .find("</string>")
+            .map(|offset| value_start + offset)
+            .context("unterminated string in Electron helper Info.plist")?;
+        let mut result = String::with_capacity(plist.len() + escaped.len());
+        result.push_str(&plist[..value_start]);
+        result.push_str(&escaped);
+        result.push_str(&plist[value_end..]);
+        return Ok(result);
+    }
+
+    let dictionary_end = plist
+        .rfind("</dict>")
+        .context("Electron helper Info.plist has no top-level dictionary")?;
+    ensure!(
+        plist[..dictionary_end].contains("<dict>"),
+        "Electron helper Info.plist has no top-level dictionary"
+    );
     let mut result = String::with_capacity(plist.len() + escaped.len());
-    result.push_str(&plist[..value_start]);
+    result.push_str(&plist[..dictionary_end]);
+    result.push_str("\n<key>");
+    result.push_str(key);
+    result.push_str("</key>\n<string>");
     result.push_str(&escaped);
-    result.push_str(&plist[value_end..]);
+    result.push_str("</string>\n");
+    result.push_str(&plist[dictionary_end..]);
     Ok(result)
 }
 
@@ -1993,6 +2034,51 @@ mod tests {
             sanitize_macos_bundle_name("Karvis: AI. ").unwrap(),
             "Karvis AI"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_official_helper_plists_can_omit_builder_fields() {
+        let root = temp_root("macos-helper-template");
+        let helper_bundle = root.join("Electron Helper.app");
+        let helper_executable = helper_bundle.join("Contents/MacOS/Electron Helper");
+        std::fs::create_dir_all(helper_executable.parent().unwrap()).unwrap();
+        std::fs::write(&helper_executable, b"helper executable fixture").unwrap();
+
+        // Electron 28's official helper plists only include this identifier;
+        // electron-builder fills the other fields later during packaging.
+        let source_plist = "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>com.github.Electron.helper</string><key>UnknownRuntimeField</key><string>preserve-me</string></dict></plist>";
+        assert_eq!(
+            source_macos_helper_executable(&helper_bundle, source_plist).unwrap(),
+            "Electron Helper"
+        );
+        assert_eq!(plist_string_value(source_plist, "CFBundleExecutable"), None);
+
+        let branded =
+            set_plist_string_value(source_plist, "CFBundleExecutable", "Karvis AI Helper").unwrap();
+        let branded =
+            set_plist_string_value(&branded, "CFBundleDisplayName", "Karvis AI Helper").unwrap();
+        let branded =
+            set_plist_string_value(&branded, "CFBundleIdentifier", "com.karvis.helper").unwrap();
+        let branded = set_plist_string_value(&branded, "CFBundleVersion", "2.0.0").unwrap();
+        assert_eq!(
+            plist_string_value(&branded, "CFBundleExecutable").as_deref(),
+            Some("Karvis AI Helper")
+        );
+        assert_eq!(
+            plist_string_value(&branded, "CFBundleDisplayName").as_deref(),
+            Some("Karvis AI Helper")
+        );
+        assert_eq!(
+            plist_string_value(&branded, "CFBundleIdentifier").as_deref(),
+            Some("com.karvis.helper")
+        );
+        assert_eq!(
+            plist_string_value(&branded, "CFBundleVersion").as_deref(),
+            Some("2.0.0")
+        );
+        assert!(branded.contains("<key>UnknownRuntimeField</key><string>preserve-me</string>"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
