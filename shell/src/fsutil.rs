@@ -109,8 +109,14 @@ pub fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
         use windows_sys::Win32::Storage::FileSystem::{
             MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
         };
-        let from: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        let from: Vec<u16> = windows_verbatim_path(source)?
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let to: Vec<u16> = windows_verbatim_path(target)?
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         if unsafe {
             MoveFileExW(
                 from.as_ptr(),
@@ -127,6 +133,47 @@ pub fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
     {
         Ok(std::fs::rename(source, target)?)
     }
+}
+
+#[cfg(windows)]
+fn windows_verbatim_path(path: &Path) -> Result<std::ffi::OsString> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let name = path
+        .file_name()
+        .context("atomic replacement path has no file name")?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| format!("canonicalize replacement parent {}", parent.display()))?;
+    let absolute = parent.join(name);
+    let wide: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+
+    if wide.starts_with(VERBATIM_PREFIX) {
+        return Ok(std::ffi::OsString::from_wide(&wide));
+    }
+
+    let mut verbatim = VERBATIM_PREFIX.to_vec();
+    if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+        // UNC paths use the `\\?\UNC\server\share` spelling in the
+        // extended-length namespace.
+        verbatim.extend([b'U' as u16, b'N' as u16, b'C' as u16, b'\\' as u16]);
+        verbatim.extend_from_slice(&wide[2..]);
+    } else if wide.len() >= 3
+        && wide[1] == b':' as u16
+        && (wide[2] == b'\\' as u16 || wide[2] == b'/' as u16)
+    {
+        verbatim.extend_from_slice(&wide);
+    } else {
+        anyhow::bail!(
+            "replacement parent did not resolve to an absolute drive or UNC path: {}",
+            absolute.display()
+        );
+    }
+    Ok(std::ffi::OsString::from_wide(&verbatim))
 }
 
 #[cfg(test)]
@@ -159,5 +206,27 @@ mod tests {
         assert!(FileLock::try_exclusive_existing(&path).unwrap().is_none());
         drop(lock);
         assert!(path.is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_replaces_files_beyond_max_path() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let long_segment = format!("segment-{}", "x".repeat(140));
+        let dir = temp
+            .path()
+            .join(&long_segment)
+            .join(&long_segment)
+            .join(&long_segment);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        assert!(path.as_os_str().encode_wide().count() > 260);
+
+        atomic_write(&path, b"first").unwrap();
+        atomic_write(&path, b"replacement").unwrap();
+
+        assert_eq!(std::fs::read(path).unwrap(), b"replacement");
     }
 }

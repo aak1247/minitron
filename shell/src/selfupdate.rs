@@ -6,7 +6,6 @@
 
 use crate::config::{platform_triple, ShellConfig};
 use crate::download;
-#[cfg(not(windows))]
 use crate::fsutil::atomic_replace;
 use crate::fsutil::atomic_write;
 use crate::fsutil::FileLock;
@@ -434,7 +433,6 @@ fn replace_with_retries(source: &Path, target: &Path) -> Result<()> {
     }
 }
 
-#[cfg(not(windows))]
 fn replace_file(source: &Path, target: &Path) -> Result<()> {
     atomic_replace(source, target).with_context(|| format!("replace {}", target.display()))
 }
@@ -536,27 +534,6 @@ pub fn apply_ticket(ticket_path: &Path) -> Result<()> {
 
     write_result(&ticket, "restarted", None)?;
     let _ = fs::remove_file(ticket_path);
-    Ok(())
-}
-
-#[cfg(windows)]
-fn replace_file(source: &Path, target: &Path) -> Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let from: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    let ok = unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
     Ok(())
 }
 
