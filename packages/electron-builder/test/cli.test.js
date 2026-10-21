@@ -96,7 +96,7 @@ test("CLI preserves resolved builder config, applies -c overrides and environmen
   let captured;
   let adapterOptions;
   const result = await runCli([
-    "--win", "nsis",
+    "--win", "nsis", "--x64",
     "--config.nsis.oneClick=false",
     "--projectDir", projectDir,
   ], {
@@ -171,7 +171,7 @@ test("CLI accepts builder --dir and explicit publish mode, and rejects prepackag
     build: { appId: "com.example.dir", productName: "Dir", asar: true },
   });
   let captured;
-  await runCli(["--dir", "--projectDir", projectDir, "--publish", "always"], {
+  await runCli(["--win", "--x64", "--dir", "--projectDir", projectDir, "--publish", "always"], {
     builder: freshBuilder(),
     build: async (options) => {
       captured = options;
