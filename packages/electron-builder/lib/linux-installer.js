@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const tempDirectories = new Set();
-const TEMPLATE_PATH = path.join(__dirname, "linux", "before-remove.sh.tpl");
+const TEMPLATE_PATH = path.join(__dirname, "linux", "lifecycle.sh.tpl");
 const LINUX_INSTALL_PREFIX = "/opt";
 
 function withLinuxInstallers(config, options) {
@@ -34,13 +34,24 @@ function withLinuxInstallers(config, options) {
   const clonedConfig = { ...config, linux };
   for (const target of ["deb", "rpm"]) {
     const targetOptions = isRecord(config[target]) ? { ...config[target] } : {};
-    const scriptPath = createBeforeRemoveScript(target, installDir, executableName);
     const configuredFpm = Object.prototype.hasOwnProperty.call(targetOptions, "fpm")
       ? targetOptions.fpm
       : linux.fpm;
     const fpmArgs = normalizeFpmArgs(configuredFpm, `config.${target}.fpm`);
     assertNoConflictingBeforeRemove(fpmArgs, target);
-    targetOptions.fpm = [...fpmArgs, "--before-remove", scriptPath];
+    const lifecycleArgs = [];
+    if (target === "rpm") {
+      assertNoConflictingBeforeInstall(fpmArgs, target);
+      lifecycleArgs.push(
+        "--before-install",
+        createLifecycleScript(target, "install", installDir, executableName),
+      );
+    }
+    lifecycleArgs.push(
+      "--before-remove",
+      createLifecycleScript(target, "remove", installDir, executableName),
+    );
+    targetOptions.fpm = [...fpmArgs, ...lifecycleArgs];
     clonedConfig[target] = targetOptions;
   }
 
@@ -115,15 +126,16 @@ function sanitizeFileName(value, projectDir) {
   }
 }
 
-function createBeforeRemoveScript(target, installDir, executableName) {
+function createLifecycleScript(target, phase, installDir, executableName) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "minitron-linux-"));
   tempDirectories.add(tempDir);
   const template = fs.readFileSync(TEMPLATE_PATH, "utf8");
   const script = template
     .replaceAll("@@PACKAGE_KIND@@", shellQuote(target))
+    .replaceAll("@@PHASE@@", shellQuote(phase))
     .replaceAll("@@INSTALL_DIR@@", shellQuote(installDir))
     .replaceAll("@@EXECUTABLE_NAME@@", shellQuote(executableName));
-  const scriptPath = path.join(tempDir, `${target}-before-remove.sh`);
+  const scriptPath = path.join(tempDir, `${target}-before-${phase}.sh`);
   fs.writeFileSync(scriptPath, script, { encoding: "utf8", mode: 0o700, flag: "wx" });
   return scriptPath;
 }
@@ -151,6 +163,16 @@ function assertNoConflictingBeforeRemove(args, target) {
     if (argument === "--before-remove" || argument === "--pre-uninstall" ||
         argument.startsWith("--before-remove=") || argument.startsWith("--pre-uninstall=")) {
       throw new Error(`config.${target}.fpm already defines a before-remove script; combine it with Minitron's generated lifecycle hook explicitly`);
+    }
+  }
+}
+
+function assertNoConflictingBeforeInstall(args, target) {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--before-install" || argument === "--pre-install" ||
+        argument.startsWith("--before-install=") || argument.startsWith("--pre-install=")) {
+      throw new Error(`config.${target}.fpm already defines a before-install script; combine it with Minitron's generated RPM lifecycle hook explicitly`);
     }
   }
 }

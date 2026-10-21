@@ -8,36 +8,50 @@
 set -u
 
 MINITRON_PACKAGE_KIND=@@PACKAGE_KIND@@
+MINITRON_PHASE=@@PHASE@@
 MINITRON_INSTALL_DIR=@@INSTALL_DIR@@
 MINITRON_EXECUTABLE_NAME=@@EXECUTABLE_NAME@@
 MINITRON_ACTION=${1:-}
 MINITRON_LAUNCHER="$MINITRON_INSTALL_DIR/$MINITRON_EXECUTABLE_NAME"
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "Minitron package lifecycle must run as root." >&2
-  exit 1
+if [ "$MINITRON_PHASE" = install ]; then
+  if [ "$MINITRON_PACKAGE_KIND" != rpm ]; then
+    echo "Minitron before-install lifecycle is only supported for RPM packages." >&2
+    exit 1
+  fi
+  # RPM runs %pre on both first install and upgrade, before unpacking the
+  # new payload. On a first install there is no old launcher to stop.
+  if [ ! -x "$MINITRON_LAUNCHER" ]; then
+    exit 0
+  fi
+  MINITRON_UNINSTALL=0
+else
+  case "$MINITRON_PACKAGE_KIND:$MINITRON_ACTION" in
+    deb:upgrade)
+      MINITRON_UNINSTALL=0
+      ;;
+    deb:remove|deb:purge)
+      MINITRON_UNINSTALL=1
+      ;;
+    deb:*)
+      exit 0
+      ;;
+    rpm:0)
+      MINITRON_UNINSTALL=1
+      ;;
+    rpm:*)
+      MINITRON_UNINSTALL=0
+      ;;
+  esac
+
+  if [ ! -x "$MINITRON_LAUNCHER" ]; then
+    echo "Minitron launcher is missing before package removal: $MINITRON_LAUNCHER" >&2
+    exit 1
+  fi
 fi
 
-case "$MINITRON_PACKAGE_KIND:$MINITRON_ACTION" in
-  deb:upgrade)
-    MINITRON_UNINSTALL=0
-    ;;
-  deb:remove|deb:purge)
-    MINITRON_UNINSTALL=1
-    ;;
-  deb:*)
-    exit 0
-    ;;
-  rpm:0)
-    MINITRON_UNINSTALL=1
-    ;;
-  rpm:*)
-    MINITRON_UNINSTALL=0
-    ;;
-esac
-
-if [ ! -x "$MINITRON_LAUNCHER" ]; then
-  echo "Minitron launcher is missing before package removal: $MINITRON_LAUNCHER" >&2
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Minitron package lifecycle must run as root." >&2
   exit 1
 fi
 if ! command -v runuser >/dev/null 2>&1; then

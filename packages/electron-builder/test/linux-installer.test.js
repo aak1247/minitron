@@ -23,6 +23,13 @@ function beforeRemovePath(config, target) {
   return args[index + 1];
 }
 
+function beforeInstallPath(config, target) {
+  const args = config[target].fpm;
+  const index = args.indexOf("--before-install");
+  assert.notEqual(index, -1);
+  return args[index + 1];
+}
+
 test("adds DEB and RPM lifecycle hooks without changing user scripts or config arrays", (t) => {
   const projectDir = fixture(t);
   const afterInstall = "scripts/after-install.sh";
@@ -47,7 +54,18 @@ test("adds DEB and RPM lifecycle hooks without changing user scripts or config a
   assert.deepEqual(result.config.linux.target, ["deb", "rpm"]);
   assert.deepEqual(result.config.deb.fpm.slice(0, 2), debFpm);
   assert.equal(result.config.rpm.fpm[0], "--vendor");
+  assert.equal(result.config.deb.fpm.includes("--before-install"), false);
+  assert.equal(result.config.rpm.fpm.includes("--before-install"), true);
   assert.equal(result.afterPack, null);
+
+  const rpmInstallPath = beforeInstallPath(result.config, "rpm");
+  assert.equal(fs.existsSync(rpmInstallPath), true);
+  assert.equal(rpmInstallPath.endsWith("rpm-before-install.sh"), true);
+  const rpmInstallScript = fs.readFileSync(rpmInstallPath, "utf8");
+  assert.ok(rpmInstallScript.includes("MINITRON_PHASE='install'"));
+  assert.ok(rpmInstallScript.includes('if [ ! -x "$MINITRON_LAUNCHER" ]; then\n    exit 0'));
+  assert.ok(rpmInstallScript.includes("MINITRON_UNINSTALL=0"));
+  assert.ok(rpmInstallScript.includes("--stop"));
 
   for (const target of ["deb", "rpm"]) {
     const scriptPath = beforeRemovePath(result.config, target);
@@ -99,6 +117,18 @@ test("rejects raw custom before-remove FPM hooks rather than replacing them sile
   );
 });
 
+test("rejects custom RPM before-install FPM hooks rather than replacing them silently", (t) => {
+  const projectDir = fixture(t);
+  assert.throws(
+    () => withLinuxInstallers({ projectDir, rpm: { fpm: ["--before-install", "scripts/custom-pre.sh"] } }, {}),
+    /config\.rpm\.fpm already defines a before-install script/,
+  );
+  assert.throws(
+    () => withLinuxInstallers({ projectDir, linux: { fpm: ["--pre-install=scripts/custom-pre.sh"] } }, {}),
+    /config\.rpm\.fpm already defines a before-install script/,
+  );
+});
+
 test("generated script separates DEB upgrade/remove and RPM upgrade/erase", (t) => {
   const projectDir = fixture(t);
   const { config } = withLinuxInstallers({ projectDir }, { installDir: "/opt/Test App" });
@@ -111,6 +141,10 @@ test("generated script separates DEB upgrade/remove and RPM upgrade/erase", (t) 
   assert.match(rpm, /MINITRON_UNINSTALL=0/);
   assert.match(deb, /runuser -u/);
   assert.match(deb, /ELECTRON_RUNTIME_ROOT/);
+  const rpmInstall = fs.readFileSync(beforeInstallPath(config, "rpm"), "utf8");
+  assert.ok(rpmInstall.includes("RPM runs %pre on both first install and upgrade"));
+  assert.ok(rpmInstall.includes('if [ ! -x "$MINITRON_LAUNCHER" ]; then\n    exit 0'));
+  assert.equal(rpmInstall.slice(0, rpmInstall.indexOf("else")).includes("MINITRON_UNINSTALL=1"), false);
 });
 
 test("generated maintenance scripts have valid POSIX shell syntax", (t) => {
@@ -118,12 +152,27 @@ test("generated maintenance scripts have valid POSIX shell syntax", (t) => {
   const { config } = withLinuxInstallers({ projectDir }, { installDir: "/opt/Test App" });
 
   for (const target of ["deb", "rpm"]) {
-    const scriptPath = beforeRemovePath(config, target);
-    const result = spawnSync("sh", ["-n", scriptPath], { encoding: "utf8" });
-    if (result.error && result.error.code === "ENOENT") {
-      t.skip("POSIX sh is unavailable on this host");
-      return;
+    const scriptPaths = [beforeRemovePath(config, target)];
+    if (target === "rpm") scriptPaths.push(beforeInstallPath(config, target));
+    for (const scriptPath of scriptPaths) {
+      const result = spawnSync("sh", ["-n", scriptPath], { encoding: "utf8" });
+      if (result.error && result.error.code === "ENOENT") {
+        t.skip("POSIX sh is unavailable on this host");
+        return;
+      }
+      assert.equal(result.status, 0, result.stderr || result.error?.message || "sh -n failed");
     }
-    assert.equal(result.status, 0, result.stderr || result.error?.message || "sh -n failed");
   }
+});
+
+test("RPM before-install skips an initial install where no old launcher exists", (t) => {
+  const projectDir = fixture(t);
+  const { config } = withLinuxInstallers({ projectDir }, { installDir: "/opt/minitron-first-install-test" });
+  const scriptPath = beforeInstallPath(config, "rpm");
+  const result = spawnSync("sh", [scriptPath, "1"], { encoding: "utf8" });
+  if (result.error && result.error.code === "ENOENT") {
+    t.skip("POSIX sh is unavailable on this host");
+    return;
+  }
+  assert.equal(result.status, 0, result.stderr || result.error?.message || "initial RPM install should skip lifecycle stop");
 });
