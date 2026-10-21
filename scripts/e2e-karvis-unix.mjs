@@ -630,11 +630,13 @@ async function launchInstallation(format, installation, systemEntry) {
     await Promise.all(Object.values(installation.launchLogs).map(filename => fs.rm(filename, { force: true })));
     const stdoutFd = fsSync.openSync(installation.launchLogs.stdout, 'w');
     const stderrFd = fsSync.openSync(installation.launchLogs.stderr, 'w');
+    const env = { ...process.env, ...appEnvironment(installation) };
+    delete env.ELECTRON_RUN_AS_NODE;
     let child;
     try {
       child = spawn(installation.launcher, [], {
         cwd: installation.appDir,
-        env: appEnvironment(installation),
+        env,
         detached: true,
         stdio: ['ignore', stdoutFd, stderrFd],
       });
