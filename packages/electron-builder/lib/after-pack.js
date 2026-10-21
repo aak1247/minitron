@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { spawnSync } = require("node:child_process");
@@ -189,7 +190,7 @@ async function afterPack(context, options, spawn = spawnSync, resolvers = {}) {
     throw new Error(`electron-builder resources directory does not exist: ${resourcesDir}`);
   }
   const executable = resolveExecutable(context, appInfo);
-  const iconPath = resolveIconPath(context, options, projectDir);
+  const iconPath = await resolveIconPath(context, options, projectDir);
   const electronDist = resolveElectronDist(packager, projectDir);
   let macElectronBundle;
   let macArchitecture;
@@ -326,7 +327,7 @@ function resolveExecutable(context, appInfo) {
   };
 }
 
-function resolveIconPath(context, options, projectDir) {
+async function resolveIconPath(context, options, projectDir) {
   const explicit = options.iconPath;
   if (explicit !== undefined) {
     if (typeof explicit !== "string" || explicit.trim() === "") {
@@ -347,16 +348,96 @@ function resolveIconPath(context, options, projectDir) {
     config.icon,
     config.mac && config.mac.icon,
   ];
+  const sources = [];
   const seen = new Set();
   for (const candidate of candidates) {
     if (typeof candidate !== "string" || candidate.trim() === "") continue;
-    const resolved = resolveFromProject(candidate, projectDir);
+    const resolved = resolveConfiguredIconPath(candidate, packager, config, projectDir);
     const normalized = process.platform === "win32" ? resolved.toLowerCase() : resolved;
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     if (isPng(resolved)) return resolved;
+    if (fs.existsSync(resolved)) sources.push(resolved);
   }
-  throw new Error("Minitron requires a PNG icon; set options.iconPath or configure a PNG build icon");
+
+  for (const source of sources) {
+    if (path.extname(source).toLowerCase() === ".ico") {
+      return convertIcoToPng(source);
+    }
+    const resolver = packager.resolveIcon;
+    if (typeof resolver !== "function") {
+      throw new Error("electron-builder's resolved packager does not expose resolveIcon() to convert its configured icon");
+    }
+    const converted = await resolver.call(packager, [source], [], "set");
+    return selectLargestPng(converted, source);
+  }
+
+  const defaultIcon = require("app-builder-lib/out/util/pathManager")
+    .getTemplatePath(path.join("icons", "electron-linux", "256x256.png"));
+  assertPng(defaultIcon);
+  return defaultIcon;
+}
+
+function resolveConfiguredIconPath(candidate, packager, config, projectDir) {
+  if (path.isAbsolute(candidate)) return path.normalize(candidate);
+  const buildResources = packager.buildResourcesDir
+    || (packager.info && packager.info.buildResourcesDir)
+    || path.resolve(projectDir, config.directories && config.directories.buildResources || "build");
+  for (const root of [buildResources, projectDir]) {
+    const resolved = path.resolve(root, candidate);
+    if (fs.existsSync(resolved)) return resolved;
+  }
+  return resolveFromProject(candidate, buildResources);
+}
+
+function selectLargestPng(icons, source) {
+  if (!Array.isArray(icons)) {
+    throw new Error(`electron-builder failed to convert configured icon to PNG: ${source}`);
+  }
+  const candidates = icons
+    .filter((icon) => icon && typeof icon.file === "string" && isPng(icon.file))
+    .sort((left, right) => (Number(right.size) || 0) - (Number(left.size) || 0));
+  if (candidates.length === 0) {
+    throw new Error(`electron-builder did not produce a PNG from configured icon: ${source}`);
+  }
+  return candidates[0].file;
+}
+
+function convertIcoToPng(source) {
+  if (process.platform !== "win32") {
+    throw new Error(`Converting a Windows .ico icon requires native Windows packaging: ${source}`);
+  }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "minitron-icon-"));
+  const output = path.join(directory, "icon.png");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -AssemblyName System.Drawing",
+    "$icon = New-Object System.Drawing.Icon($env:MINITRON_ICON_SOURCE)",
+    "$bitmap = $icon.ToBitmap()",
+    "try { $bitmap.Save($env:MINITRON_ICON_DEST, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose(); $icon.Dispose() }",
+  ].join("; ");
+  try {
+    const result = spawnSync("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script,
+    ], {
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+      env: { ...process.env, MINITRON_ICON_SOURCE: source, MINITRON_ICON_DEST: output },
+    });
+    if (result.error) throw new Error(result.error.message);
+    if (result.status !== 0) throw new Error((result.stderr || result.stdout || `PowerShell exited ${result.status}`).trim());
+    assertPng(output);
+    return Buffer.from(fs.readFileSync(output));
+  } catch (error) {
+    throw new Error(`Unable to convert configured Windows icon to PNG (${source}): ${error.message}`);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function isPngBytes(bytes) {
+  return Buffer.isBuffer(bytes) && bytes.length >= PNG_SIGNATURE.length && bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE);
 }
 
 function assertPng(filePath) {
@@ -584,8 +665,14 @@ function writeFileIfSameOrMissing(filePath, contents, label) {
 }
 
 function copyIcon(sourcePath, destinationPath) {
-  assertPng(sourcePath);
-  const sourceBytes = fs.readFileSync(sourcePath);
+  let sourceBytes;
+  if (Buffer.isBuffer(sourcePath)) {
+    sourceBytes = sourcePath;
+  } else {
+    assertPng(sourcePath);
+    sourceBytes = fs.readFileSync(sourcePath);
+  }
+  if (!isPngBytes(sourceBytes)) throw new Error("Minitron icon source is not a PNG image");
   if (fs.existsSync(destinationPath)) {
     if (fs.readFileSync(destinationPath).equals(sourceBytes)) return;
     throw new Error(`Refusing to overwrite existing Minitron icon resource: ${destinationPath}`);
@@ -1185,6 +1272,7 @@ module.exports = {
   afterPack,
   createAfterPackHook,
   patchAsar,
+  resolveIconPath,
   resolveRuntimeVersion,
   resolveTargetArchitecture,
   verifyLauncherVersion,

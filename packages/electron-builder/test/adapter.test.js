@@ -8,8 +8,9 @@ const crypto = require("node:crypto");
 const test = require("node:test");
 const asar = require("@electron/asar");
 const pickle = require("chromium-pickle-js");
+const { Platform, PlatformPackager } = require("app-builder-lib");
 const { withMinitron } = require("../index");
-const { afterPack, createAfterPackHook, resolveRuntimeVersion, resolveTargetArchitecture, verifyLauncherVersion } = require("../lib/after-pack");
+const { afterPack, createAfterPackHook, resolveIconPath, resolveRuntimeVersion, resolveTargetArchitecture, verifyLauncherVersion } = require("../lib/after-pack");
 const { validateRuntimeDownloadArtifact } = require("../lib/validation");
 
 const RUNTIME_VERSION = "28.3.3";
@@ -176,6 +177,63 @@ test("target architecture comes from electron-builder context, including cross-t
   assert.equal(resolveTargetArchitecture("win32", 1), "x64");
   assert.throws(() => resolveTargetArchitecture("linux", 3), /only x64 targets/);
   assert.throws(() => resolveTargetArchitecture("darwin", 4), /universal target/);
+});
+
+test("resolves configured PNGs and converts ICNS through electron-builder's icon API", async (t) => {
+  const fixture = await makeFixture(t);
+  const iconDirectory = path.join(fixture.projectDir, "assets");
+  fs.mkdirSync(iconDirectory, { recursive: true });
+  const icnsPath = path.join(iconDirectory, "app.icns");
+  fs.copyFileSync(require.resolve("app-builder-lib/templates/icons/proton-native/proton-native.icns"), icnsPath);
+
+  const pngPackager = makeIconPackager(fixture.projectDir, {
+    directories: { output: "icon-output" },
+    mac: { icon: "assets/icon.png" },
+  });
+  pngPackager.resolveIcon = async () => { throw new Error("existing PNG should be used directly"); };
+  assert.equal(await resolveIconPath({ packager: pngPackager }, {}, fixture.projectDir), fixture.iconPath);
+
+  const icnsPackager = makeIconPackager(fixture.projectDir, {
+    directories: { output: "icon-output" },
+    mac: { icon: "assets/app.icns" },
+  });
+  const convertedPath = await resolveIconPath({ packager: icnsPackager }, {}, fixture.projectDir);
+  assert.equal(fs.readFileSync(convertedPath).subarray(0, PNG.length).equals(PNG), true);
+  assert.match(convertedPath, /\.icon-set/i);
+});
+
+test("uses the bundled default PNG icon when no application icon is configured", async (t) => {
+  const fixture = await makeFixture(t);
+  const context = makeContext(fixture, "win32");
+  const defaultIcon = await resolveIconPath(context, {}, fixture.projectDir);
+  assert.match(defaultIcon, /electron-linux[\\/]256x256\.png$/);
+
+  await afterPack(context, {
+    launcherPath: fixture.launcherPath,
+    manifestUrl: "https://updates.example.test/manifest.json",
+  }, () => ({ status: 0, stdout: "0.2.0", stderr: "" }));
+  const packagedIcon = path.join(fixture.resourcesDir, "minitron-icon.png");
+  assert.equal(fs.readFileSync(packagedIcon).equals(fs.readFileSync(defaultIcon)), true);
+});
+
+test("converts a configured Windows ICO on native Windows", { skip: process.platform !== "win32" }, async (t) => {
+  const fixture = await makeFixture(t);
+  const iconPath = path.join(fixture.projectDir, "assets", "app.ico");
+  fs.copyFileSync(require.resolve("app-builder-lib/templates/icons/proton-native/proton-native.ico"), iconPath);
+  const context = makeContext(fixture, "win32");
+  context.packager.platformSpecificBuildOptions = { icon: "assets/app.ico" };
+  context.packager.config.win = { icon: "assets/app.ico" };
+
+  const converted = await resolveIconPath(context, {}, fixture.projectDir);
+  assert.equal(Buffer.isBuffer(converted), true);
+  assert.equal(converted.subarray(0, PNG.length).equals(PNG), true);
+});
+
+test("explicit Minitron icon paths still require PNG files", async (t) => {
+  const fixture = await makeFixture(t);
+  const invalidPath = path.join(fixture.projectDir, "assets", "not-an-icon.txt");
+  fs.writeFileSync(invalidPath, "not png");
+  await assert.rejects(resolveIconPath(makeContext(fixture, "win32"), { iconPath: invalidPath }, fixture.projectDir), /Minitron icon must be a PNG image/);
 });
 
 test("embedded runtime metadata is strict and preserves the manifest compatibility path", async (t) => {
@@ -641,6 +699,19 @@ function makeContext(fixture, platform) {
       },
     },
   };
+}
+
+function makeIconPackager(projectDir, config) {
+  const packager = Object.create(PlatformPackager.prototype);
+  packager.info = {
+    projectDir,
+    buildResourcesDir: path.join(projectDir, "build"),
+    config,
+  };
+  packager.appInfo = { productFilename: "Fixture", name: "fixture", version: "1.2.3" };
+  packager.platform = Platform.MAC;
+  packager.platformSpecificBuildOptions = {};
+  return packager;
 }
 
 function makeTempDir() {
