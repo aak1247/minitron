@@ -182,7 +182,7 @@ async function main() {
     assert.equal(appManifest.main, '__minitron_bootstrap__.cjs');
     assert.equal(appManifest.minitronOriginalMain, 'dist/main/index.js');
     assert.equal(appManifest.metadata?.minitron?.appId, 'com.minitron.buildercli.e2e');
-    assert(asar.extractFile(archivePath, 'dist/main/index.js').toString('utf8').includes('MINITRON_BUILDER_CLI_FIXTURE'));
+    assert(asar.extractFile(archivePath, path.join('dist', 'main', 'index.js')).toString('utf8').includes('MINITRON_BUILDER_CLI_FIXTURE'));
     assert(asar.extractFile(archivePath, '__minitron_bootstrap__.cjs').length > 0);
     assert(asar.extractFile(archivePath, '__minitron_bootstrap__.mjs').length > 0);
     assert.equal(await fs.readFile(path.join(resourcesDir, 'minitron-icon.png')).then(bytes => bytes.subarray(0, 8).toString('hex')), '89504e470d0a1a0a');
