@@ -6,6 +6,7 @@
 
 Var /GLOBAL minitronLifecycleResult
 Var /GLOBAL minitronLifecycleOutput
+Var /GLOBAL minitronProcessRecord
 
 !macro minitronStopInstallation
   ${If} ${FileExists} "$INSTDIR\minitron.toml"
@@ -30,7 +31,20 @@ Var /GLOBAL minitronLifecycleOutput
 ; The default check stops all executables with the same filename. Scope the
 ; check to this installation instead, including any orphaned Electron child.
 !macro customCheckAppRunning
-  ${If} ${FileExists} "$INSTDIR\updates\process.json"
+  ; Mutable state may live in the user's runtime cache, including when the
+  ; installation is under Program Files. Ask the installed launcher so this
+  ; stays compatible with both legacy and current state layouts.
+  StrCpy $minitronProcessRecord "$INSTDIR\updates\process.json"
+  ${If} ${FileExists} "$INSTDIR\minitron.toml"
+    nsExec::ExecToStack '"$INSTDIR\${PRODUCT_FILENAME}.exe" --app-dir "$INSTDIR" --state-dir'
+    Pop $minitronLifecycleResult
+    Pop $minitronLifecycleOutput
+    ${If} $minitronLifecycleResult == "0"
+      ${TrimNewLines} $minitronLifecycleOutput $minitronLifecycleOutput
+      StrCpy $minitronProcessRecord "$minitronLifecycleOutput\process.json"
+    ${EndIf}
+  ${EndIf}
+  ${If} ${FileExists} "$minitronProcessRecord"
     ${IfNot} ${Silent}
       ${IfNot} ${isUpdated}
         MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK +2
