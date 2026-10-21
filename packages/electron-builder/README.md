@@ -1,27 +1,28 @@
 # @minitron/electron-builder
 
-Package an existing Electron app with the Minitron launcher through electron-builder. Your app's normal Electron and Node.js development workflow stays the same; Minitron changes apply when the packaged app starts through its launcher.
+Use `withMinitron` to adapt an existing electron-builder configuration. Your regular Electron development and packaging settings remain in place; the adapter replaces the packaged Electron runtime with the Minitron launcher and adds installer lifecycle handling.
 
-The adapter currently supports Windows NSIS packaging. The Linux `afterPack` path is available, but the complete installer flow has not been confirmed. macOS packaging through this adapter is not supported yet. The Minitron launcher itself remains available for Windows x64, Linux x64, and macOS x64 / arm64.
+## Supported packages
+
+- Windows x64 with NSIS; launcher v0.2.0 or newer.
+- Linux x64 with DEB or RPM; launcher v0.3.0 or newer. AppImage and Snap are not supported. Set `linux.target` to `deb` and/or `rpm`; the adapter supplies both when `linux.target` is omitted.
+- macOS with DMG or PKG; launcher v0.3.0 or newer. Build x64 and arm64 separately with the matching launcher. Universal and Mac App Store builds are not supported.
+
+The package requires Node.js 22.12 or newer. The example below pins electron-builder 24.13.3.
 
 ## Install
 
-The package is not published to npm yet. Install the v0.2.0 release tarball and the supported electron-builder version:
+The package is distributed as a GitHub release tarball:
 
 ```sh
-npm install --save-dev electron-builder@24.13.3 https://github.com/aak1247/minitron/releases/download/v0.2.0/minitron-electron-builder-0.2.0.tgz
+npm install --save-dev electron-builder@24.13.3 https://github.com/aak1247/minitron/releases/download/v0.3.0/minitron-electron-builder-0.3.0.tgz
 ```
 
-The adapter requires Minitron launcher v0.2.0 or newer. On Windows, install that launcher into your project:
-
-```powershell
-Invoke-WebRequest https://github.com/aak1247/minitron/releases/download/v0.2.0/install.ps1 -OutFile "$env:TEMP/minitron-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP/minitron-install.ps1" -Version v0.2.0 -InstallDir ./.minitron
-```
+Set `MINITRON_LAUNCHER` to the launcher for the target platform and architecture, and `MINITRON_MANIFEST_URL` to your HTTPS app-update manifest. Use the matching v0.3.0 launcher on Linux and macOS; Windows accepts v0.2.0 or newer.
 
 ## Configure electron-builder
 
-Wrap your existing electron-builder configuration with `withMinitron`:
+Wrap your existing configuration without replacing its files, resources, icons, or platform settings:
 
 ```js
 const { withMinitron } = require("@minitron/electron-builder");
@@ -31,7 +32,16 @@ module.exports = withMinitron(
     appId: "com.example.desktop",
     productName: "Example Desktop",
     asar: true,
-    // Keep your existing files, resources, ASAR, icon, and installer options here.
+    linux: {
+      target: ["deb", "rpm"],
+      maintainer: process.env.MINITRON_MAINTAINER,
+      icon: "build/app.png",
+    },
+    mac: {
+      target: ["dmg", "pkg"],
+      icon: "build/app.png",
+    },
+    // Keep your existing files, extraResources, asarUnpack, Windows and NSIS options.
   },
   {
     launcherPath: process.env.MINITRON_LAUNCHER,
@@ -41,32 +51,34 @@ module.exports = withMinitron(
 );
 ```
 
-`launcherPath` and `manifestUrl` are required, and `asar` must be enabled. `iconPath` is a project-relative PNG copied into the app's resources directory. If omitted, the adapter looks for a PNG among the configured app icons. Run electron-builder from the app project root so project-relative paths resolve as expected. You can set `projectDir` when the app root differs from the current working directory, and can also set `runtimeVersion`, `manifestPublicKey`, and `allowLocalhostHttp`; HTTPS is required unless localhost HTTP is explicitly enabled.
+Minitron requires ASAR packaging. `iconPath` is a PNG included in app resources; if omitted, the adapter looks for a PNG among the configured application icons. Configure an app icon for macOS and a Linux PNG/icon set; electron-builder can generate the macOS icon from a PNG. Linux DEB/RPM builds need a real maintainer email in `MINITRON_MAINTAINER` or `linux.maintainer`, such as `Your Name <you@company.com>`.
 
-The wrapper retains your existing `files`, `extraResources`, `asarUnpack`, icons, shortcuts, and NSIS install or uninstall options. It adds the Minitron lifecycle include to `nsis.include` and chains your existing `afterPack` hook.
+`withMinitron` preserves your existing `afterPack` hook and runs it before Minitron conversion. It retains NSIS options and composes the NSIS lifecycle include. Linux DEB/RPM keeps configured `afterInstall` and `afterRemove` scripts and adds a before-remove hook. PKG builds retain user scripts and add an app-stop step before replacing the installed bundle.
 
-Add a build script and set the two environment variables before building:
+`launcherPath` and `manifestUrl` are required. Relative paths resolve from `projectDir` or the build working directory. `runtimeVersion` is inferred from electron-builder's resolved Electron runtime; `manifestPublicKey` and `allowLocalhostHttp` are optional. HTTPS is required unless localhost HTTP is explicitly enabled. CommonJS and ESM application entries are supported.
 
-```json
-{
-  "scripts": {
-    "dist:windows": "electron-builder --config examples/electron-builder/electron-builder.config.cjs --win nsis"
-  }
-}
+Use the platform targets in the [copyable example](../../examples/electron-builder/README.md). For macOS, supply electron-builder's usual signing identity and notarization credentials/settings when distributing signed and notarized packages. The adapter does not provide developer certificates or make an unsigned build signed.
+
+## Install, start, update, and uninstall
+
+Install Windows builds with the NSIS installer, DEB builds with `apt`, or RPM builds with `dnf`/`rpm`. Install a DMG app by dragging it to Applications; install a PKG by opening the package installer. Start the app from its normal shortcut or Applications folder. Minitron obtains the required shared Electron runtime on first launch and applies app updates from the configured manifest.
+
+NSIS handles Windows installation, upgrade and removal; a real uninstall stops the app and unregisters it while respecting your existing NSIS app-data options. Linux package-manager upgrades stop the old app and retain its registration. Remove a DEB with `sudo apt remove <package>` or an RPM with `sudo dnf remove <package>`; the package hook stops the app and unregisters it. PKG upgrades stop the running app for each registered user before replacing the bundle. A DMG has no package-manager uninstall hook.
+
+On macOS, run the app's `Contents/Resources/minitron-uninstall.command` from Terminal before deleting the `.app`. For example:
+
+```sh
+"/Applications/Example Desktop.app/Contents/Resources/minitron-uninstall.command"
 ```
 
-```powershell
-$env:MINITRON_LAUNCHER = (Resolve-Path ./.minitron/minitron.exe).Path
-$env:MINITRON_MANIFEST_URL = "https://updates.example.com/manifest.json"
-npm run dist:windows
-```
+The command stops the app and unregisters its Minitron runtime state. Dragging the app to Trash does not run this command; remove the app from Applications after running it.
 
-See the [copyable configuration](https://github.com/aak1247/minitron/tree/main/examples/electron-builder/README.md) and the [Karvis integration example](https://github.com/aak1247/minitron/tree/main/examples/karvis/README.md).
+Minitron app updates replace `app.asar` and `app.asar.unpacked`. `extraResources` are included in the installer but not in the app update archive. Keep updateable content in ASAR or distribute external resource changes separately. `electron-updater` is not automatically connected to the Minitron manifest.
 
-## Updates and packaged resources
+In a packaged app, `process.execPath` identifies the shared Electron runtime. Use `process.env.MINITRON_LAUNCHER` when your app needs to relaunch itself through Minitron.
 
-CommonJS and ESM entry points are supported. `process.execPath` identifies the shared Electron runtime; use `process.env.MINITRON_LAUNCHER` to start the installed application.
+## 简体中文
 
-NSIS distributes and upgrades the installed package. Minitron app updates use the configured manifest and update `app.asar` plus `app.asar.unpacked`. Files copied through `extraResources` are included in the installer, but are not included in Minitron's app update archive; use ASAR resources for files that must change with an app update, or update external resources separately.
+适配器保留现有 electron-builder 配置，并将打包后的 Electron 主程序替换为 Minitron 启动器。支持 Windows NSIS、Linux DEB/RPM，以及 macOS DMG/PKG。Linux 不支持 AppImage 或 Snap；macOS x64 与 arm64 必须分别打包，不能使用 universal 或 Mac App Store 目标。Linux/macOS 启动器最低为 v0.3.0，Windows 最低为 v0.2.0。
 
-`electron-updater` is not automatically integrated with Minitron. Use the Minitron manifest for Minitron app updates.
+安装启动器和平台操作见[通用配置示例](../../examples/electron-builder/README.zh-CN.md)与[Karvis 示例](../../examples/karvis/README.zh-CN.md)。macOS 卸载前需手动运行 `.app/Contents/Resources/minitron-uninstall.command`；将应用拖进废纸篓不会自动运行该脚本。

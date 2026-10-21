@@ -11,9 +11,31 @@ function requiredEnvironmentValue(name) {
   return value;
 }
 
+function emailIn(value) {
+  if (typeof value !== "string") return undefined;
+  const match = value.match(/\S+@\S+\.\S+/);
+  return match ? value.trim() : undefined;
+}
+
+function packageAuthorMaintainer(author) {
+  if (author && typeof author === "object") return emailIn(author.email);
+  return emailIn(author);
+}
+
+function linuxBuildRequested() {
+  return process.argv.some((argument) =>
+    argument.startsWith("--linux") || argument === "-l" || (/^-[^-]+$/.test(argument) && argument.slice(1).includes("l")));
+}
+
 const projectDir = process.cwd();
 const projectPackage = require(path.join(projectDir, "package.json"));
 const originalBuild = projectPackage.build || {};
+const linuxMaintainer = emailIn(process.env.MINITRON_MAINTAINER)
+  || emailIn(originalBuild.linux?.maintainer)
+  || packageAuthorMaintainer(projectPackage.author);
+if (linuxBuildRequested() && !linuxMaintainer) {
+  throw new Error("Linux DEB/RPM builds require a real email: set MINITRON_MAINTAINER or add an email to package.json author");
+}
 const appConfig = {
   ...originalBuild,
   appId: originalBuild.appId || "com.karvis.ai",
@@ -40,6 +62,16 @@ const appConfig = {
     ...originalBuild.win,
     target: ["nsis"],
     icon: originalBuild.win?.icon || "assets/icon.png",
+  },
+  linux: {
+    ...originalBuild.linux,
+    target: ["deb", "rpm"],
+    icon: originalBuild.linux?.icon || "assets/icon.png",
+    ...(linuxMaintainer ? { maintainer: linuxMaintainer } : {}),
+  },
+  mac: {
+    ...originalBuild.mac,
+    target: ["dmg", "pkg"],
   },
   nsis: {
     ...originalBuild.nsis,

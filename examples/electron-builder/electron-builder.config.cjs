@@ -10,6 +10,16 @@ function requiredEnvironmentValue(name) {
   return value;
 }
 
+function linuxBuildRequested() {
+  return process.argv.some((argument) =>
+    argument.startsWith("--linux") || argument === "-l" || (/^-[^-]+$/.test(argument) && argument.slice(1).includes("l")));
+}
+
+const linuxMaintainer = process.env.MINITRON_MAINTAINER;
+if (linuxBuildRequested() && !/\S+@\S+\.\S+/.test(linuxMaintainer || "")) {
+  throw new Error("Linux DEB/RPM builds require MINITRON_MAINTAINER with an actual email, for example 'Your Name <you@company.com>'");
+}
+
 const appConfig = {
   appId: "com.example.desktop",
   productName: "Example Desktop",
@@ -30,6 +40,15 @@ const appConfig = {
   win: {
     target: ["nsis"],
     icon: "build/app.ico",
+  },
+  linux: {
+    target: ["deb", "rpm"],
+    maintainer: linuxMaintainer,
+    icon: "build/app.png",
+  },
+  mac: {
+    target: ["dmg", "pkg"],
+    icon: "build/app.png",
   },
   nsis: {
     oneClick: false,

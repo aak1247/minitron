@@ -58,9 +58,9 @@ Linux requires a desktop environment with glibc 2.35+, fontconfig, X11 or Waylan
 
 ### electron-builder
 
-Use the [Minitron adapter](packages/electron-builder/README.md) to produce Windows NSIS installers with your application's name, icon, shortcuts and installer options. Your regular Electron and Node.js development flow remains unchanged.
+Use the [Minitron adapter](packages/electron-builder/README.md) with existing electron-builder configuration to produce Windows NSIS, Linux DEB/RPM, and macOS DMG/PKG packages. Linux AppImage/Snap and macOS universal/Mac App Store targets are not supported; build macOS x64 and arm64 separately. Your regular Electron and Node.js development flow remains unchanged.
 
-See the [copyable electron-builder configuration](examples/electron-builder/README.md) and the [Karvis integration example](examples/karvis/README.md). The adapter's Linux `afterPack` path is available; macOS packaging through the adapter is not supported yet.
+See the [copyable electron-builder configuration](examples/electron-builder/README.md) and the [Karvis integration example](examples/karvis/README.md). macOS apps include a manual `minitron-uninstall.command`; dragging an app to Trash does not run it.
 
 ### Portable app directory
 
