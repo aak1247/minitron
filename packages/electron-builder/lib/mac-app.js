@@ -11,6 +11,9 @@ const MACHO_CPU_TYPES = {
 
 function resolveMacBundlePaths(appOutDir, appInfo) {
   const productFilename = requiredName(appInfo.productFilename, "appInfo.productFilename");
+  if (productFilename.endsWith(" Helper")) {
+    throw new Error("Minitron macOS packaging does not support appInfo.productFilename ending in ' Helper'; electron-builder rewrites CFBundleExecutable to remove that suffix");
+  }
   const bundlePath = path.join(appOutDir, `${productFilename}.app`);
   const contentsDir = path.join(bundlePath, "Contents");
   const resourcesDir = path.join(contentsDir, "Resources");

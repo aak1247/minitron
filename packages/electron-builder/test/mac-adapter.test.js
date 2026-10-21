@@ -13,7 +13,7 @@ const RUNTIME_VERSION = "28.3.3";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 const MAIN_INFO_PLIST = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Fixture</string><key>CFBundleIdentifier</key><string>com.fixture.app</string><key>CFBundleName</key><string>Fixture Product</string><key>CFBundleDisplayName</key><string>Fixture Product</string><key>CFBundleIconFile</key><string>icon.icns</string></dict></plist>";
 
-test("afterPack converts a branded .app and preserves bundle identity and app resources", async (t) => {
+test("afterPack converts a branded .app, strips builder-renamed helper variants, and preserves app resources", async (t) => {
   const fixture = await makeMacFixture(t, "x64");
   const pkgTarget = {
     name: "pkg",
@@ -32,7 +32,9 @@ test("afterPack converts a branded .app and preserves bundle identity and app re
   assert.deepEqual(fs.readFileSync(fixture.executablePath), fixture.launcherBytes);
   assert.deepEqual(fs.readFileSync(fixture.electronExecutablePath), fixture.electronExecutableBytes);
   assert.equal(fs.existsSync(fixture.runtimeFrameworkBinary), false);
-  assert.equal(fs.existsSync(fixture.helperBundlePath), false);
+  for (const helperBundlePath of fixture.helperBundlePaths) {
+    assert.equal(fs.existsSync(helperBundlePath), false, `expected Electron helper to be removed: ${helperBundlePath}`);
+  }
   assert.equal(fs.existsSync(path.join(fixture.resourcesDir, "runtime.pak")), false);
   assert.equal(fs.readFileSync(path.join(fixture.resourcesDir, "custom.pak"), "utf8"), "app-owned-resource");
   assert.equal(fs.readFileSync(path.join(fixture.resourcesDir, "user-data.bin"), "utf8"), "extra-resource");
@@ -68,6 +70,21 @@ test("afterPack converts a branded .app and preserves bundle identity and app re
   assert.match(preinstall, /\.minitron-user-hook/);
   assert.equal(fs.readFileSync(path.join(generatedScripts, ".minitron-user-hook"), "utf8"), "#!/bin/sh\necho user-preinstall\n");
   assert.equal(fs.readFileSync(path.join(generatedScripts, "postinstall"), "utf8"), "#!/bin/sh\necho user-postinstall\n");
+});
+
+test("afterPack rejects product filenames ending in the builder-reserved Helper suffix", async (t) => {
+  const fixture = await makeMacFixture(t, "x64");
+  const context = makeMacContext(fixture, "x64");
+  context.packager.appInfo.productFilename = "Fixture Helper";
+  context.packager.appInfo.sanitizedProductName = "Fixture Helper";
+  const originalManifest = asar.extractFile(fixture.archivePath, "package.json").toString("utf8");
+
+  await assert.rejects(afterPack(context, {
+    launcherPath: fixture.launcherPath,
+    manifestUrl: "https://updates.example.test/manifest.json",
+    iconPath: fixture.iconPath,
+  }, () => ({ status: 0, stdout: "0.3.0", stderr: "" })), /productFilename ending in ' Helper'/);
+  assert.equal(asar.extractFile(fixture.archivePath, "package.json").toString("utf8"), originalManifest);
 });
 
 test("afterPack converts an arm64 .app and rejects a mismatched launcher architecture", async (t) => {
@@ -137,9 +154,6 @@ async function makeMacFixture(t, runtimeArch, launcherArch = runtimeArch) {
   const electronContents = path.join(electronDist, "Electron.app", "Contents");
   const frameworkDir = path.join(contentsDir, "Frameworks", "Electron Framework.framework", "Versions", "A");
   const runtimeFrameworkBinary = path.join(frameworkDir, "Electron Framework");
-  const helperBundlePath = path.join(contentsDir, "Frameworks", "Fixture Product Helper.app");
-  const helperContents = path.join(helperBundlePath, "Contents");
-  const helperExePath = path.join(helperContents, "MacOS", "Fixture Product Helper");
   const originalMain = "dist/main/index.js";
   const appSourceDir = path.join(root, "app-source");
   fs.mkdirSync(resourcesDir, { recursive: true });
@@ -154,10 +168,8 @@ async function makeMacFixture(t, runtimeArch, launcherArch = runtimeArch) {
   fs.mkdirSync(electronContents, { recursive: true });
   const sourceMacosDir = path.join(electronContents, "MacOS");
   const sourceFrameworkDir = path.join(electronContents, "Frameworks", "Electron Framework.framework", "Versions", "A");
-  const sourceHelperContents = path.join(electronContents, "Frameworks", "Electron Helper.app", "Contents");
   fs.mkdirSync(sourceMacosDir, { recursive: true });
   fs.mkdirSync(sourceFrameworkDir, { recursive: true });
-  fs.mkdirSync(path.join(sourceHelperContents, "MacOS"), { recursive: true });
   fs.mkdirSync(path.join(electronContents, "Resources"), { recursive: true });
   fs.writeFileSync(path.join(electronDist, "version"), `${RUNTIME_VERSION}\n`);
 
@@ -169,26 +181,49 @@ async function makeMacFixture(t, runtimeArch, launcherArch = runtimeArch) {
   fs.writeFileSync(path.join(electronContents, "Info.plist"), "official-electron-info");
   fs.writeFileSync(path.join(electronContents, "Resources", "runtime.pak"), "official-runtime");
   fs.writeFileSync(path.join(electronContents, "Resources", "icon.icns"), "electron-icon");
-  const helperSourceInfo = plistXml({
-    CFBundleExecutable: "Electron Helper",
-    CFBundleDisplayName: "Electron Helper",
-    CFBundleIdentifier: "com.electron.helper",
-    CFBundleVersion: "1",
-    CFBundlePackageType: "APPL",
-  });
-  const helperPackagedInfo = plistXml({
-    CFBundleExecutable: "Fixture Product Helper",
-    CFBundleDisplayName: "Fixture Product Helper",
-    CFBundleIdentifier: "com.fixture.app.helper",
-    CFBundleVersion: "1.2.3",
-    CFBundlePackageType: "APPL",
-  });
-  fs.writeFileSync(path.join(sourceHelperContents, "Info.plist"), helperSourceInfo);
-  fs.writeFileSync(path.join(sourceHelperContents, "MacOS", "Electron Helper"), "electron-helper-binary");
-  fs.mkdirSync(helperContents, { recursive: true });
-  fs.mkdirSync(path.join(helperContents, "MacOS"), { recursive: true });
-  fs.writeFileSync(path.join(helperContents, "Info.plist"), helperPackagedInfo);
-  fs.writeFileSync(helperExePath, "electron-helper-binary");
+  const helperVariants = [
+    { suffix: " Helper", parent: "Frameworks" },
+    { suffix: " Helper EH", parent: "Frameworks" },
+    { suffix: " Helper NP", parent: "Frameworks" },
+    { suffix: " Helper (Renderer)", parent: "Frameworks" },
+    { suffix: " Helper (Plugin)", parent: "Frameworks" },
+    { suffix: " Helper (GPU)", parent: "Frameworks" },
+    { suffix: " Login Helper", parent: path.join("Library", "LoginItems") },
+  ];
+  const helperBundlePaths = [];
+  for (const [index, variant] of helperVariants.entries()) {
+    const sourceBundleName = `Electron${variant.suffix}.app`;
+    const packagedBundleName = `Fixture Product${variant.suffix}.app`;
+    const sourceBundle = path.join(electronContents, variant.parent, sourceBundleName);
+    const packagedBundle = path.join(contentsDir, variant.parent, packagedBundleName);
+    const sourceHelperContents = path.join(sourceBundle, "Contents");
+    const packagedHelperContents = path.join(packagedBundle, "Contents");
+    const sourceExecutable = `Electron${variant.suffix}`;
+    const packagedExecutable = `Fixture Product${variant.suffix}`;
+    fs.mkdirSync(path.join(sourceHelperContents, "MacOS"), { recursive: true });
+    fs.mkdirSync(path.join(sourceHelperContents, "Resources"), { recursive: true });
+    fs.mkdirSync(path.join(packagedHelperContents, "MacOS"), { recursive: true });
+    fs.mkdirSync(path.join(packagedHelperContents, "Resources"), { recursive: true });
+    fs.writeFileSync(path.join(sourceHelperContents, "Info.plist"), plistXml({
+      CFBundleExecutable: sourceExecutable,
+      CFBundleDisplayName: sourceExecutable,
+      CFBundleIdentifier: `com.electron.helper.${index}`,
+      CFBundleVersion: "1",
+      CFBundlePackageType: "APPL",
+    }));
+    fs.writeFileSync(path.join(packagedHelperContents, "Info.plist"), plistXml({
+      CFBundleExecutable: packagedExecutable,
+      CFBundleDisplayName: packagedExecutable,
+      CFBundleIdentifier: `com.fixture.app.helper.${index}`,
+      CFBundleVersion: "1.2.3",
+      CFBundlePackageType: "APPL",
+    }));
+    fs.writeFileSync(path.join(sourceHelperContents, "MacOS", sourceExecutable), `electron-helper-${index}`);
+    fs.writeFileSync(path.join(packagedHelperContents, "MacOS", packagedExecutable), `electron-helper-${index}`);
+    fs.writeFileSync(path.join(sourceHelperContents, "Resources", "official-helper.dat"), `official-helper-resource-${index}`);
+    fs.writeFileSync(path.join(packagedHelperContents, "Resources", "official-helper.dat"), `official-helper-resource-${index}`);
+    helperBundlePaths.push(packagedBundle);
+  }
 
   fs.writeFileSync(path.join(appSourceDir, "package.json"), JSON.stringify({
     name: "fixture-app",
@@ -238,7 +273,7 @@ async function makeMacFixture(t, runtimeArch, launcherArch = runtimeArch) {
     iconPath,
     executablePath,
     runtimeFrameworkBinary,
-    helperBundlePath,
+    helperBundlePaths,
     mainInfoPlist,
     brandIconPath,
     customFrameworkPath,
