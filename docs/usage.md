@@ -100,6 +100,8 @@ Build options include `-Makensis <path>` for NSIS, `-OutputDirectory <path>` for
 
 Shared runtimes use `%LOCALAPPDATA%/SharedElectron` on Windows, `$XDG_DATA_HOME/SharedElectron` (default `~/.local/share/SharedElectron`) on Linux, or `~/Library/Application Support/SharedElectron` on macOS. Set `ELECTRON_RUNTIME_ROOT` to use a different directory. Uninstalling an app preserves runtimes still used by other apps.
 
+Each required Electron version is downloaded and installed once per user. Later launches open the application directly without the launcher window. Preparation runs again only when the runtime is missing, a different version is required, or files need repair. Complete archives left by an interrupted attempt are verified and reused without downloading or showing the download window; preparation errors still show an error and retry action.
+
 ## Launcher options
 
 | Option | Use |

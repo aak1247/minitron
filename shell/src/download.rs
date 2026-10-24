@@ -30,11 +30,21 @@ pub fn download(artifact: &Artifact, dir: &Path, on_progress: ProgressFn) -> Res
     }
 
     let mut existing = part.metadata().map(|meta| meta.len()).unwrap_or(0);
-    if existing > artifact.size {
-        std::fs::remove_file(&part).ok();
+    // The final read/flush or process exit may have interrupted the previous
+    // call after all bytes arrived. Verify before issuing a Range at EOF:
+    // servers answer 416 there, which would otherwise discard the whole file.
+    if existing == artifact.size && is_complete_file(&part, artifact)? {
+        std::fs::rename(&part, &dest).context("commit recovered artifact")?;
+        return Ok(dest);
+    }
+    if existing >= artifact.size {
+        std::fs::remove_file(&part).context("remove invalid partial artifact")?;
         existing = 0;
     }
 
+    // A cache hit never reports network progress. The launcher uses this first
+    // sample to show its download window only when a request is necessary.
+    on_progress(existing, artifact.size);
     let response = request_artifact(&url, &part, existing)?;
     let status = response.status();
     let mut range_length = None;
@@ -418,6 +428,50 @@ mod tests {
             body.len(),
             String::from_utf8_lossy(body)
         )
+    }
+
+    #[test]
+    fn complete_partial_is_verified_and_committed_without_network() {
+        let temp = temp_dir();
+        let bytes = b"already downloaded payload";
+        let art = artifact("http://127.0.0.1:1/unavailable".into(), bytes);
+        let id = artifact_id(&art);
+        let part = temp.path().join(format!("artifact-{id}.part"));
+        std::fs::write(&part, bytes).unwrap();
+
+        let path = download(&art, temp.path(), Box::new(|_, _| panic!("cache hit"))).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(!part.exists());
+        assert_eq!(
+            download(&art, temp.path(), Box::new(|_, _| panic!("cache hit"))).unwrap(),
+            path
+        );
+    }
+
+    #[test]
+    fn corrupt_complete_partial_restarts_with_a_full_request() {
+        let temp = temp_dir();
+        let bytes = b"valid payload";
+        let art = artifact(serve_one(response("200 OK", "", bytes)), bytes);
+        let id = artifact_id(&art);
+        std::fs::write(
+            temp.path().join(format!("artifact-{id}.part")),
+            vec![b'x'; bytes.len()],
+        )
+        .unwrap();
+
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let samples = progress.clone();
+        let path = download(
+            &art,
+            temp.path(),
+            Box::new(move |got, _| {
+                samples.lock().unwrap().push(got);
+            }),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_eq!(progress.lock().unwrap().first(), Some(&0));
     }
 
     #[test]

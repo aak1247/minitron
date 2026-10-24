@@ -100,6 +100,8 @@ node scripts/serve-release.mjs --dir ./dist/local-source --port 8787
 
 共享运行时默认存放在 Windows 的 `%LOCALAPPDATA%/SharedElectron`、Linux 的 `$XDG_DATA_HOME/SharedElectron`（默认 `~/.local/share/SharedElectron`）或 macOS 的 `~/Library/Application Support/SharedElectron`，可通过 `ELECTRON_RUNTIME_ROOT` 指定其他目录。卸载应用时会保留其他应用仍在使用的运行时。
 
+同一用户所需的 Electron 版本只需下载并安装一次。后续启动直接进入应用，不显示 launcher 引导窗口；只有缺少运行时、需要下载其他版本或修复损坏文件时才会重新准备。中断后留下的完整下载包会先校验并复用，无需重新下载，也不会显示下载窗口；准备失败时会显示错误和重试入口。
+
 ## 启动选项
 
 | 选项 | 用途 |

@@ -150,7 +150,8 @@ fn run() -> Result<i32> {
     let rt = match runtime::locate_for(&cfg, &active.runtime_key) {
         Ok(rt) => rt,
         Err(error) if offline => return Err(error.context("runtime unavailable in offline mode")),
-        Err(_) => {
+        Err(error) => {
+            eprintln!("RUNTIME_UNAVAILABLE: {error:#}");
             let configured_artifact =
                 manifest::configured_runtime_artifact(&cfg, &active.runtime_key)?.cloned();
             let manifest_artifact = if configured_artifact.is_none() {

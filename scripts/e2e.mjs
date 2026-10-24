@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createServer } from 'node:http';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -181,7 +181,9 @@ try {
     assert.equal(await exists(path.join(runtimePath(cache, options['runtime-version']), 'install.json')), false);
   });
   await check('Slint first-install UI downloads exact runtime and launches real page, preload and IPC', async () => {
-    const value = smoke(await run(appA.executable, ['--no-update']));
+    const result = await run(appA.executable, ['--no-update']);
+    const value = smoke(result);
+    assert.match(result.stderr, /RUNTIME_UI_SHOWN/);
     assert.equal(value.electron, options['runtime-version']); assert.equal(value.appVersion, '1.0.0');
     assert.equal(requestCount(options['runtime-version']), 1);
     assert(await exists(path.join(runtimePath(cache, options['runtime-version']), 'install.json')));
@@ -191,6 +193,18 @@ try {
     smoke(await run(appA.executable, ['--offline']));
     assert.equal(requests.length, before);
     report.offlineStartupMilliseconds = Date.now() - started;
+  });
+  await check('normal repeated launches reuse the installed runtime without launcher UI', async () => {
+    const marker = path.join(runtimePath(cache, options['runtime-version']), 'install.json');
+    const before = await fs.stat(marker);
+    const downloads = requestCount(options['runtime-version']);
+    for (const args of [[], [], ['--no-update'], ['--offline']]) {
+      const result = await run(appA.executable, args);
+      smoke(result);
+      assert.doesNotMatch(result.stderr, /RUNTIME_UI_SHOWN|RUNTIME_DOWNLOAD|RUNTIME_EXTRACTED|RUNTIME_UNAVAILABLE/);
+    }
+    assert.equal(requestCount(options['runtime-version']), downloads);
+    assert.equal((await fs.stat(marker)).mtimeMs, before.mtimeMs, 'startup must preserve the installed runtime');
   });
   await check('pinned runtime launches without an update server and reuses its offline cache', async () => {
     const standalone = await install('standalone-no-manifest', report.baseline);
@@ -214,6 +228,26 @@ try {
     assert.match(update.stdout, /UPDATE_NOT_CONFIGURED/);
     smoke(await run(standalone.executable, ['--offline'], env));
     assert.equal(requests.length, after);
+    await check('verified cached and complete partial archives recover without network or launcher UI', async () => {
+      const size = Buffer.alloc(8);
+      size.writeBigUInt64LE(BigInt(artifact.size));
+      const id = createHash('sha256').update(artifact.url).update(Buffer.from([0]))
+        .update(size).update(Buffer.from([0])).update(artifact.sha256.toLowerCase()).digest('hex');
+      const downloadDir = path.join(standaloneCache, 'staging', `${runtimePlatform}-v${options['runtime-version']}`, artifact.sha256, 'download');
+      const installed = runtimePath(standaloneCache, options['runtime-version']);
+      assert(installed.startsWith(work + path.sep), 'recovery fixture must stay in the owned temporary directory');
+      for (const extension of ['bin', 'part']) {
+        await fs.rm(installed, { recursive: true });
+        await fs.mkdir(downloadDir, { recursive: true });
+        await fs.copyFile(options['runtime-zip'], path.join(downloadDir, `artifact-${id}.${extension}`));
+        const before = requests.length;
+        const result = await run(standalone.executable, [], env);
+        smoke(result);
+        assert.match(result.stderr, /RUNTIME_READY/);
+        assert.doesNotMatch(result.stderr, /RUNTIME_UI_SHOWN/);
+        assert.equal(requests.length, before, `${extension} recovery must not request the network`);
+      }
+    });
     await run(standalone.executable, ['--uninstall'], env);
     assert.equal(await exists(runtimePath(standaloneCache, options['runtime-version'])), false);
   });

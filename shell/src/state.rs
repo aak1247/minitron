@@ -58,9 +58,18 @@ pub fn install_runtime(
     key: &RuntimeKey,
     artifact: &Artifact,
 ) -> Result<runtime::Runtime> {
+    // Another installation may have finished preparing this shared runtime
+    // since the coordinator checked it. Avoid even creating a window then.
+    if let Ok(runtime) = runtime::locate_for(cfg, key) {
+        return Ok(runtime);
+    }
     let window = ShellWindow::new()?;
     crate::i18n::apply(&window);
     window.set_runtime_label(format!("Electron {} · {}", key.version, key.platform).into());
+    window.window().on_close_requested(|| {
+        let _ = slint::quit_event_loop();
+        slint::CloseRequestResponse::HideWindow
+    });
     let busy = Arc::new(AtomicBool::new(false));
     let outcome: Outcome = Arc::new(Mutex::new(None));
     let progress: Progress = Arc::new(Mutex::new(None));
@@ -125,6 +134,13 @@ pub fn install_runtime(
                     )
                     .into(),
                 );
+                if let Err(error) = show_download_window(&w) {
+                    if let Ok(mut slot) = refresh_outcome.lock() {
+                        *slot = Some(Err(error));
+                    }
+                    let _ = slint::quit_event_loop();
+                    return;
+                }
             }
             if preparing {
                 return;
@@ -139,7 +155,6 @@ pub fn install_runtime(
             });
             match status {
                 Some(Ok(())) => {
-                    // ComponentHandle::run hides the window after the loop returns.
                     // Request exit before changing visibility or dropping the proxy.
                     if let Err(error) = slint::quit_event_loop() {
                         eprintln!("RUNTIME_UI_QUIT_ERROR: {error}");
@@ -149,6 +164,12 @@ pub fn install_runtime(
                     w.set_stage("error".into());
                     w.set_indeterminate(false);
                     w.set_message(message.into());
+                    if let Err(error) = show_download_window(&w) {
+                        if let Ok(mut slot) = refresh_outcome.lock() {
+                            *slot = Some(Err(error));
+                        }
+                        let _ = slint::quit_event_loop();
+                    }
                 }
                 None => {}
             }
@@ -169,8 +190,12 @@ pub fn install_runtime(
             progress,
         );
     });
-    window.run()?;
-    eprintln!("RUNTIME_UI_CLOSED");
+    // Keep preparation invisible for verified archives left by an interrupted
+    // extraction, or when another process wins the installation lock. Only a
+    // real download (or a preparation error) needs a visible launcher.
+    slint::run_event_loop_until_quit()?;
+    window.hide()?;
+    eprintln!("RUNTIME_PREPARATION_FINISHED");
     let result = outcome
         .lock()
         .map_err(|_| anyhow::anyhow!("runtime worker failed"))?
@@ -179,4 +204,12 @@ pub fn install_runtime(
         Some(result) => result,
         None => bail!("runtime installation cancelled"),
     }
+}
+
+fn show_download_window(window: &ShellWindow) -> Result<()> {
+    if !window.window().is_visible() {
+        window.show()?;
+        eprintln!("RUNTIME_UI_SHOWN");
+    }
+    Ok(())
 }
