@@ -42,11 +42,21 @@ npx minitron-builder --mac dmg pkg --arm64
 
 Build macOS x64 and arm64 separately. Linux DEB/RPM builds require a `homepage` and a real maintainer email in package metadata or Linux settings. Artifacts go to `build.directories.output`, or `dist` when no output directory is configured.
 
-## Install and updates
+## Runtime downloads and sharing
 
-Install Windows packages with NSIS, DEB packages with `apt`, RPM packages with `dnf` or `rpm`, and macOS packages with DMG or PKG. Start the app from its normal shortcut or Applications folder. Minitron downloads the matching official Electron runtime on first launch.
+Install Windows packages with NSIS, DEB packages with `apt`, RPM packages with `dnf` or `rpm`, and macOS packages with DMG or PKG. Start the app from its normal shortcut or Applications folder.
+
+The launcher downloads the exact official Electron runtime only when it is absent or needs repair. Later launches open the application directly without a launcher window. Compatible Minitron applications share the same runtime when they use the same user cache, OS, architecture and exact Electron version. Complete cached archives are verified and reused without another download or a download window.
+
+Application and installer upgrades reuse an unchanged Electron version. Requiring another version downloads it only when that version is not cached. Uninstalling one application preserves runtimes still referenced by other installations. See [cache locations and startup behavior](https://github.com/aak1247/minitron/blob/main/docs/usage.md#runtime-cache-and-startup).
+
+## Application updates
 
 An app update manifest is optional. To publish app updates, configure a manifest URL and follow the [update guide](https://github.com/aak1247/minitron/blob/main/docs/usage.md#publishing-updates). Minitron update archives contain `app.asar` and `app.asar.unpacked`; `extraResources` are included in the installer but not in those app update archives. `electron-updater` is not automatically connected to the Minitron manifest.
+
+## Upgrade Minitron and uninstall
+
+Run `npm install --save-dev minitron-builder@latest` and rebuild your installer to include the latest launcher. An npm dependency update alone does not replace launchers in already installed applications; use a new installer or a configured launcher update for those users.
 
 NSIS and Linux package managers handle their normal upgrade and uninstall lifecycle. A PKG upgrade stops the old app before replacing it. On macOS, run `Contents/Resources/minitron-uninstall.command` in Terminal before deleting the app; dragging it to Trash does not run the command. DMG installs do not have a package-manager uninstall hook.
 

@@ -1,51 +1,59 @@
-# minitron
+# Minitron
 
-**更小的 Electron 应用包，共享同一份运行时。**
+使用原生启动器和共享 Electron 运行时打包应用。每个安装包包含应用代码与启动器；兼容的应用复用当前用户缓存中的同一份运行时。
 
-[English](README.md) | **简体中文** · [下载](https://github.com/aak1247/minitron/releases/latest) · [npm](https://www.npmjs.com/package/minitron-builder)
-
-minitron 将 Electron 应用与运行时分开打包。应用安装包包含轻量原生启动器，多个应用可复用同一份 Electron 运行时。
-
-- 仅包含应用的 ASAR 包，支持原生模块。
-- 共享运行时、断点续传和自动清理。
-- 后台更新与上一版本回滚。
-- 根据系统显示语言自动选择中文或英文。
-
-支持 **Windows x64、Linux x64、macOS Intel / Apple Silicon**。
-
-![minitron 启动器](docs/images/launcher-zh.png)
+[English](README.md) | **简体中文** · [最新版本](https://github.com/aak1247/minitron/releases/latest) · [npm](https://www.npmjs.com/package/minitron-builder) · [版本记录](CHANGELOG.md)
 
 ## 快速开始
 
-需要 Node.js 22.12 或更新版本。在目标操作系统上的现有 Electron 项目目录中运行。项目已编译时可跳过 `npm run build`。
+需要 **Node.js 22.12+**，以及已有 electron-builder 配置的 Electron 项目。在需要打包的操作系统上运行：
 
 ```sh
-npm install -D minitron-builder
+npm install --save-dev minitron-builder
 npm run build
 npx minitron-builder
 ```
 
-CLI 会读取现有 electron-builder 配置或 `package.json` 中的 `build`，并下载匹配平台和架构的 Minitron 启动器。普通的 Electron 开发流程不变；应用仍使用 electron-builder 中已有的 `appId`、`productName`、图标、文件、`extraResources`、`asarUnpack` 和安装选项。
+应用已编译时可跳过 `npm run build`。CLI 会读取 electron-builder 配置或 `package.json` 中的 `build`，然后下载对应平台与架构的 Minitron 启动器。
 
-下面是覆盖三个平台的简短 `package.json` 示例：
+保留现有的应用 ID、名称、图标、文件和安装器配置，**必须启用 ASAR**。例如，将以下字段合并到现有配置：
 
 ```json
 {
-  "homepage": "https://example.com/my-app",
-  "author": { "name": "Example", "email": "packaging@example.com" },
   "build": {
     "appId": "com.example.desktop",
     "productName": "Example Desktop",
-    "asar": true,
-    "directories": { "output": "release" },
-    "win": { "target": ["nsis"], "icon": "build/app.ico" },
-    "linux": { "target": ["deb", "rpm"], "icon": "build/app.png" },
-    "mac": { "target": ["dmg", "pkg"], "icon": "build/app.png" }
+    "asar": true
   }
 }
 ```
 
-默认目标是当前平台。需要时可指定格式：
+产物写入 `build.directories.output`，默认目录为 `dist`。包含图标和 Linux 包元数据的完整配置见 [electron-builder 示例](examples/electron-builder/README.zh-CN.md)。
+
+## 用户启动时会发生什么
+
+| 场景 | 行为 |
+|---|---|
+| 尚未安装所需的 Electron 版本 | 下载、校验并安装运行时，然后打开应用。 |
+| 所需运行时已经安装 | 直接打开应用，不显示启动器窗口。 |
+| 应用更新，Electron 版本不变 | 复用已安装的运行时。 |
+| 应用需要另一个 Electron 版本 | 有缓存则复用，没有则下载该版本一次。 |
+| 另一个 Minitron 应用使用相同版本 | 同一用户、系统和架构下共享运行时。 |
+| 卸载其中一个应用 | 保留其他安装仍在引用的运行时。 |
+
+共享要求 **Electron 版本完全一致**，且使用同一缓存目录。不同用户账户分别缓存；运行时文件被删除或损坏后，可能需要重新下载。
+
+服务器支持范围请求时，中断下载会断点续传；已完整下载的归档会先校验再复用。只有下载或准备出错时才显示启动器窗口，日常启动直接进入应用。
+
+![下载 Electron 时显示的启动器](docs/images/launcher-zh.png)
+
+## 支持的平台与格式
+
+| 平台 | 架构 | 安装包格式 |
+|---|---|---|
+| Windows | x64 | NSIS |
+| Linux | x64 | DEB、RPM |
+| macOS | Intel、Apple Silicon | DMG、PKG；两种架构分别构建 |
 
 ```sh
 npx minitron-builder --win nsis
@@ -54,39 +62,32 @@ npx minitron-builder --mac dmg pkg --x64
 npx minitron-builder --mac dmg pkg --arm64
 ```
 
-macOS x64 与 arm64 需分别构建。Linux DEB/RPM 需要 `homepage` 和有效维护者邮箱。产物写入 `build.directories.output` 指定的目录；未配置时写入 `dist`。
+Linux 包需要 `homepage` 和有效维护者邮箱，可在应用元数据或 Linux 构建选项中设置。启动器需要桌面环境和 glibc 2.35+，依赖清单见[平台要求](docs/usage.zh-CN.md#平台要求)。安装器集成暂不支持 AppImage、Snap、macOS Universal 和 Mac App Store。
 
-首次启动不需要更新服务器：应用会从 Electron 官方分发源下载共享运行时。应用内更新可稍后添加 manifest，见[更新指南](docs/usage.zh-CN.md#发布更新)。macOS 卸载前请在终端运行应用内的 `minitron-uninstall.command`；拖到废纸篓不会自动运行卸载脚本。
+## 更新与兼容性
 
-## 包体积
+更新服务器为可选项。未配置时，安装后的应用会从 Electron 官方分发源获取所需运行时。需要分发应用和启动器更新时，按[更新指南](docs/usage.zh-CN.md#发布更新)配置 Minitron 更新清单。
 
-v0.4.1，使用内置示例应用和 Electron 32.2.0。下载列为压缩包体积，其余为解压后的文件大小。
+- 应用更新在后台暂存，后续启动时激活，支持回滚。
+- `electron-updater` 不会自动接入 Minitron 更新清单。
+- `extraResources` 随安装包分发，不包含在 Minitron 应用更新归档中。
+- macOS 删除应用前，应运行应用内的 `Contents/Resources/minitron-uninstall.command`；移到废纸篓不会执行清理。
 
-| 平台 | 启动器下载 | 启动器 | 示例应用目录 | Electron 运行时 |
-|---|---:|---:|---:|---:|
-| Windows x64 | [5.21 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-windows-x64.zip) | 9.70 MiB | 9.71 MiB | 264.74 MiB |
-| Linux x64 | [6.53 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-linux-x64.tar.gz) | 13.28 MiB | 13.29 MiB | 264.98 MiB |
-| macOS Intel | [5.31 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-macos-x64.tar.gz) | 9.75 MiB | 9.76 MiB | 246.06 MiB |
-| macOS Apple Silicon | [5.14 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-macos-arm64.tar.gz) | 8.49 MiB | 8.49 MiB | 239.90 MiB |
+让后续打包使用最新版启动器，需要更新开发依赖并重新构建安装包：
 
-示例应用目录包含启动器、配置和应用资源，不含共享运行时。示例的应用更新 ZIP 仅 **8.22 KiB**。完整字节数见 Release 中的 [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.4.1/sizes.json)。
+```sh
+npm install --save-dev minitron-builder@latest
+npx minitron-builder
+```
 
-Karvis AI 2.0.0 的 Windows 安装包（Electron 28.3.3、NSIS）：**77.34 MiB → 10.56 MiB**，缩小约 **86%**。共享运行时另计，在首次启动时下载一次。
+更新开发依赖不会替换用户已经安装的应用启动器。
 
-Karvis AI 2.0.0 的 Linux 与 macOS 安装包（Electron 28.3.3，共享运行时单独下载）：
+## 文档入口
 
-| 平台 | 格式 | 安装包体积 |
-|---|---|---:|
-| Linux x64 | DEB / RPM | 7.65 / 7.67 MiB |
-| macOS Intel | PKG / DMG | 12.79 / 14.24 MiB |
-| macOS Apple Silicon | PKG / DMG | 12.55 / 13.98 MiB |
+- [使用指南](docs/usage.zh-CN.md)：便携打包、配置、运行时缓存、问题排查和更新发布。
+- [打包器参考](packages/electron-builder/README.md)：安装器集成与支持范围。
+- [Karvis 示例](examples/karvis/README.zh-CN.md)：打包包含原生资源的现有应用。
+- [包体积测量](docs/benchmarks.md)：注明版本的历史测量与适用范围；当前版本的精确数据见 [sizes.json](https://github.com/aak1247/minitron/releases/latest/download/sizes.json)。
+- [贡献指南](CONTRIBUTING.md)：本地检查和发布验证。
 
-## 高级用法
-
-便携应用目录和单独安装启动器见[打包指南](docs/usage.zh-CN.md#打包应用)，也可从[预编译版本](https://github.com/aak1247/minitron/releases/latest)手动安装启动器。
-
-Linux 需要桌面环境、glibc 2.35+、fontconfig、X11 或 Wayland 及 xkbcommon。Ubuntu 22.04+ 可运行 `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6` 安装启动器依赖；Electron 还需要 GTK3、通知、NSS、音频和 GBM 等桌面库。
-
-参见[通用 electron-builder 示例](examples/electron-builder/README.zh-CN.md)、[Karvis 接入示例](examples/karvis/README.zh-CN.md)和[使用指南](docs/usage.zh-CN.md)。
-
-启动器跟随系统显示语言：中文系统使用简体中文，其他语言使用英语。可通过 `MINITRON_LANG=en`、`zh` 或 `auto` 手动指定。
+启动器跟随系统显示语言：中文环境使用简体中文，其他语言使用英语。可通过 `MINITRON_LANG=en`、`zh` 或 `auto` 覆盖。

@@ -56,6 +56,8 @@ jobs:
       - name: Test app packaging
         working-directory: app
         run: npm test
+      - name: Check documentation and release versions
+        run: node scripts/check-docs.mjs
       - name: Test publishing
         run: node --test scripts/publish-release.test.mjs
       - name: Check Rust formatting

@@ -8,7 +8,7 @@ on:
       tag:
         description: Release tag (must match Cargo version)
         required: true
-        default: v0.4.1
+        default: v0.4.2
       publish:
         description: Publish the release after all platform tests pass
         type: boolean
@@ -76,6 +76,7 @@ jobs:
           npm --prefix packages/electron-builder ci --ignore-scripts --no-audit --no-fund
       - name: Unit tests
         run: |
+          node scripts/check-docs.mjs
           npm --prefix app test
           npm --prefix packages/electron-builder test
           node --test scripts/publish-release.test.mjs scripts/build-app.test.mjs scripts/install.test.mjs

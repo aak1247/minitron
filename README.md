@@ -1,23 +1,12 @@
-# minitron
+# Minitron
 
-**Smaller Electron packages, shared runtime.**
+Package Electron apps with a native launcher and a shared Electron runtime. Each installer contains your application code and launcher; compatible apps reuse the same runtime in the current user's cache.
 
-**English** | [简体中文](README.zh-CN.md) · [Downloads](https://github.com/aak1247/minitron/releases/latest) · [npm](https://www.npmjs.com/package/minitron-builder)
-
-Minitron packages Electron apps separately from their runtime. Your app ships with a small native launcher and reuses the same Electron installation as other apps using that version.
-
-- App-only ASAR packages, including native modules.
-- Shared runtimes with resumable downloads and automatic cleanup.
-- Background updates and rollback to the previous app version.
-- English and Chinese, selected from the system display language.
-
-Available for **Windows x64, Linux x64, and macOS Intel / Apple Silicon**.
-
-![minitron launcher](docs/images/launcher-en.png)
+**English** | [简体中文](README.zh-CN.md) · [Releases](https://github.com/aak1247/minitron/releases/latest) · [npm](https://www.npmjs.com/package/minitron-builder) · [Changelog](CHANGELOG.md)
 
 ## Quick start
 
-Requires Node.js 22.12 or newer. Run these commands from your existing Electron project on the target operating system. Skip the build step if the app is already compiled.
+Use **Node.js 22.12+** and an existing Electron project with electron-builder configuration. Run these commands on the operating system you are packaging for:
 
 ```sh
 npm install --save-dev minitron-builder
@@ -25,27 +14,46 @@ npm run build
 npx minitron-builder
 ```
 
-The CLI reads your existing `electron-builder` config or `package.json` `build` field, then downloads the matching Minitron launcher. It uses your normal `appId`, `productName`, icon, files, `extraResources`, `asarUnpack`, and installer settings. Electron development stays unchanged.
+Skip `npm run build` if your application is already compiled. The CLI reads your electron-builder configuration or the `build` field in `package.json`, then downloads the matching Minitron launcher.
 
-Here is a minimal three-platform `package.json` configuration:
+Keep your existing application ID, name, icons, files and installer settings. **ASAR must be enabled.** For example, merge these fields into your existing configuration:
 
 ```json
 {
-  "homepage": "https://example.com/my-app",
-  "author": { "name": "Example", "email": "packaging@example.com" },
   "build": {
     "appId": "com.example.desktop",
     "productName": "Example Desktop",
-    "asar": true,
-    "directories": { "output": "release" },
-    "win": { "target": ["nsis"], "icon": "build/app.ico" },
-    "linux": { "target": ["deb", "rpm"], "icon": "build/app.png" },
-    "mac": { "target": ["dmg", "pkg"], "icon": "build/app.png" }
+    "asar": true
   }
 }
 ```
 
-`npx minitron-builder` targets the current platform by default. Select another package format when needed:
+Artifacts are written to `build.directories.output`, or `dist` by default. For a complete configuration, including icons and Linux package metadata, use the [electron-builder example](examples/electron-builder/README.md).
+
+## What users see
+
+| Situation | Behavior |
+|---|---|
+| Required Electron version is not installed | Download, verify and install it; then open the application. |
+| Runtime is already installed | Open the application directly, without a launcher window. |
+| Application updates with the same Electron version | Reuse the installed runtime. |
+| Application needs another Electron version | Reuse that version if cached; otherwise download it once. |
+| Another Minitron application uses the same version | Share the runtime for the same user, OS and architecture. |
+| One application is uninstalled | Keep runtimes still referenced by other installations. |
+
+Sharing requires the **exact Electron version** and the same cache directory. Different user accounts have separate caches. Missing or damaged runtime files may require another download.
+
+Interrupted downloads resume when the server supports ranges. Complete cached archives are verified and reused. The launcher window appears for downloads or preparation errors; routine launches go straight to the app.
+
+![Launcher shown while downloading Electron](docs/images/launcher-en.png)
+
+## Supported packages
+
+| Platform | Architecture | Installer formats |
+|---|---|---|
+| Windows | x64 | NSIS |
+| Linux | x64 | DEB, RPM |
+| macOS | Intel, Apple Silicon | DMG, PKG; build each architecture separately |
 
 ```sh
 npx minitron-builder --win nsis
@@ -54,39 +62,32 @@ npx minitron-builder --mac dmg pkg --x64
 npx minitron-builder --mac dmg pkg --arm64
 ```
 
-Build macOS x64 and arm64 packages separately. Linux DEB/RPM builds also need a `homepage` and a real maintainer email in your package metadata or Linux build settings. Output goes to `build.directories.output`, or to `dist` if no output directory is configured.
+Linux packages need a `homepage` and a real maintainer email in application metadata or Linux build settings. The launcher needs a desktop environment and glibc 2.35+; see [platform requirements](docs/usage.md#platform-requirements) for dependencies. AppImage, Snap, macOS Universal and Mac App Store targets are not supported by the installer integration.
 
-No update server is needed for the first launch: the installed app downloads its shared Electron runtime from the official Electron distribution. You can add app updates from a manifest later; see the [update guide](docs/usage.md#publishing-updates). On macOS, run the included `minitron-uninstall.command` before deleting the app.
+## Updates and compatibility
 
-## Package size
+An update server is optional. Without one, the installed application obtains its required runtime from the official Electron distribution. To deliver application and launcher updates, configure a Minitron manifest using the [update guide](docs/usage.md#publishing-updates).
 
-v0.4.1, using the included example and Electron 32.2.0. Downloads are compressed; other columns show uncompressed file sizes.
+- Application updates are staged in the background and activated on a later launch, with rollback support.
+- `electron-updater` is not automatically connected to Minitron manifests.
+- `extraResources` ship in installers but are not included in Minitron application update archives.
+- On macOS, run the included `Contents/Resources/minitron-uninstall.command` before deleting an application. Moving it to Trash does not run this cleanup.
 
-| Platform | Launcher download | Launcher | Example app | Electron runtime |
-|---|---:|---:|---:|---:|
-| Windows x64 | [5.21 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-windows-x64.zip) | 9.70 MiB | 9.71 MiB | 264.74 MiB |
-| Linux x64 | [6.53 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-linux-x64.tar.gz) | 13.28 MiB | 13.29 MiB | 264.98 MiB |
-| macOS Intel | [5.31 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-macos-x64.tar.gz) | 9.75 MiB | 9.76 MiB | 246.06 MiB |
-| macOS Apple Silicon | [5.14 MiB](https://github.com/aak1247/minitron/releases/download/v0.4.1/minitron-v0.4.1-macos-arm64.tar.gz) | 8.49 MiB | 8.49 MiB | 239.90 MiB |
+To use the latest Minitron launcher in future builds, update the development dependency and rebuild your installer:
 
-The example app includes the launcher, configuration and app resources; its shared runtime is separate. The example app update ZIP is **8.22 KiB**. Exact byte counts are available in [sizes.json](https://github.com/aak1247/minitron/releases/download/v0.4.1/sizes.json).
+```sh
+npm install --save-dev minitron-builder@latest
+npx minitron-builder
+```
 
-Karvis AI 2.0.0 on Windows (Electron 28.3.3, NSIS): **77.34 MiB → 10.56 MiB**, about **86% smaller**. The shared runtime is separate and downloads once on first launch.
+Updating this dependency does not replace launchers in applications that are already installed.
 
-Karvis AI 2.0.0 installers on Linux and macOS (Electron 28.3.3, shared runtime downloaded separately):
+## Documentation
 
-| Platform | Formats | Installer sizes |
-|---|---|---:|
-| Linux x64 | DEB / RPM | 7.65 / 7.67 MiB |
-| macOS Intel | PKG / DMG | 12.79 / 14.24 MiB |
-| macOS Apple Silicon | PKG / DMG | 12.55 / 13.98 MiB |
+- [Usage guide](docs/usage.md): portable packaging, configuration, runtime caches, troubleshooting and update publishing.
+- [Builder reference](packages/electron-builder/README.md): installer integration and supported targets.
+- [Karvis example](examples/karvis/README.md): package an existing application with native resources.
+- [Package size measurements](docs/benchmarks.md): versioned measurements and their limits. Current release measurements are in [sizes.json](https://github.com/aak1247/minitron/releases/latest/download/sizes.json).
+- [Contributing](CONTRIBUTING.md): local checks and release validation.
 
-## Advanced use
-
-For portable app directories or separate launcher installation, see the [packaging guide](docs/usage.md#packaging-an-app). You can also install the launcher directly from a [prebuilt release](https://github.com/aak1247/minitron/releases/latest).
-
-Linux requires a desktop environment with glibc 2.35+, fontconfig, X11 or Wayland, and xkbcommon. On Ubuntu 22.04+, launcher dependencies can be installed with `sudo apt-get install libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxi6`; Electron also needs GTK3, notifications, NSS, audio and GBM libraries.
-
-See the [copyable electron-builder example](examples/electron-builder/README.md), the [Karvis integration example](examples/karvis/README.md), or the [usage guide](docs/usage.md) for advanced configuration and update publishing.
-
-The launcher follows the system display language: Simplified Chinese for Chinese systems, English otherwise. Override it with `MINITRON_LANG=en`, `zh` or `auto`.
+The launcher follows the system display language: Simplified Chinese for Chinese locales, English otherwise. Override it with `MINITRON_LANG=en`, `zh` or `auto`.
